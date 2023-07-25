@@ -1,0 +1,5 @@
+WRAP BIOS custom startup message			pd 040428
+
+To insert a custom startup message, create a text file as needed.
+(e.g. TEST.MSG). Then edit the batch file P.BAT to the right file
+names. Update the BIOS with SETBIOS.COM or using the serial update.

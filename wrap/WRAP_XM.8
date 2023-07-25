@@ -1,0 +1,298 @@
+	;
+	; Xmodem protocol code, derived from Georges Menie / www.menie.org
+	; released under LGPL license
+	;
+	; Limitations: Only supports CRC mode. Destination offset must be
+	; multiple of 1K.
+	;
+	; (C)2003 Pascal Dornier / PC Engines GmbH
+	;
+	; pd 030812 initial code
+	
+	; messages
+	
+xm_msgst:	db	"Start XMODEM transmission... ",0
+xm_msgok:	db	13,10,"OK",13,10,0
+xm_msgsy:	db	13,10,"Sync err",13,10,0
+xm_msgca:	db	13,10,"Cancelled",13,10,0
+xm_msgre:	db	13,10,"Too many retries",13,10,0
+
+	; XMODEM variables
+
+xm_pt	equ	xm_base	;data destination
+xm_pktsz	equ	xm_base+4	;packet size (bytes)
+xm_sum	equ	xm_base+6	;CRC accumulator
+xm_rxcrc	equ	xm_base+8	;received CRC
+xm_rxno 	equ	xm_base+10	;received packet number (norm + inv)
+xm_cnt	equ	xm_base+12	;byte counter
+xm_pktno	equ	xm_base+14	;expected packet number
+xm_retran	equ	xm_base+15	;retransmission counter
+xm_retry	equ	xm_base+16	;retry counter
+xm_trych	equ	xm_base+17	;trial character
+	;
+	; input AL from serial port, time-out CX (32 us each)
+	;
+xm_in:	mov	cx,31000	;about 1 second
+xm_in0:	mov	dx,CONSOLE+5	
+xm_in1:	in	al,dx	;receive data ready ?
+	test	al,1
+	jnz	xm_in9	;:yes
+	
+xm_in2:	in	al,port61	;wait for refresh bit clear
+	test	al,10h
+	jnz	xm_in2
+	
+xm_in3:	in	al,port61	;wait for refresh bit set
+	test	al,10h
+	jz	xm_in3
+	loop	xm_in1
+	mov	al,0	;clear character
+	stc		;time-out
+	ret
+
+xm_in9:	mov	dx,CONSOLE	;receive data
+	in	al,dx
+	clc		;ok exit
+	ret
+	;
+	; output AL to serial port
+	;
+xm_out:	push	dx
+	push	ax
+	mov	dx,CONSOLE+5
+xm_out1:	in	al,dx    	;wait for transmit ready
+	out	iowait,ax
+	test	al,40h
+	jz	xm_out1
+	mov	dl,low(CONSOLE)
+	pop	ax
+	out	dx,al
+	pop	dx
+	ret
+	;
+	; flush input
+	;
+xm_flush:	mov	cx,500	;short time-out
+	call	xm_in0
+	jnb	xm_flush	;eat data
+	ret
+;
+; Copyright 2001, 2002 Georges Menie (www.menie.org)
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU Lesser General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU Lesser General Public License for more details.
+;
+; You should have received a copy of the GNU Lesser General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+SOH	equ	001
+STX	equ	002
+EOT	equ	004
+ACK	equ	006
+NAK	equ	015
+CAN	equ	018
+XM_MAXRETRY equ	25	;max number retries
+	;
+	; receive file by Xmodem protocol -> [xm_pt]
+	;
+xm_rec:	mov	si,offset xm_msgst	;display start message
+	call	v_msg
+
+	mov	dx,CONSOLE+1	;disable serial interrupt
+	mov	al,0
+	out	dx,al
+	
+	mov	byte [xm_pktno],1
+	mov	byte [xm_retran],xm_maxretry
+	mov	byte [xm_trych],'C'
+	
+	; main loop
+	
+xm_rec0:	mov	byte [xm_retry],16	;for( retry = 0; retry < 16; ++retry) {
+xm_rec1:	dec	byte [xm_retry]
+	jz	xm_rec6	;:end of retries
+
+	mov	al,[xm_trych]	;	if (trychar) _outbyte(trychar);
+	cmp	al,0
+	jz	xm_rec2
+	call	xm_out
+xm_rec2:	mov	cx,65000	;if ((c = _inbyte((DLY_1S)<<1)) >= 0) {
+	call	xm_in0
+	jb	xm_rec1	;:time-out
+	cmp	al,SOH	;switch (c) {
+	jnz	xm_rec3	;case SOH:
+	mov	word [xm_pktsz],128	;	bufsz = 128;
+	jmp	xm_rec10	;	goto start_recv;
+	
+xm_rec3:	cmp	al,STX	;case STX:
+	jnz	xm_rec4
+	mov	word [xm_pktsz],1024	; bufsz = 1024;
+	jmp	xm_rec10	; goto start_recv;
+	
+xm_rec4:	cmp	al,EOT	;case EOT:
+	jnz	xm_rec5
+	call	xm_flush;	;	flushinput();
+	mov	al,ACK	;	_outbyte(ACK);
+	call	xm_out
+	mov	si,offset xm_msgok	;ok message
+	clc	
+xm_end:	pushf
+	call	v_msg
+	mov	dx,CONSOLE+1	;enable serial interrupt
+	mov	al,1
+	out	dx,al
+	popf
+	ret
+	
+xm_rec5:	cmp	al,CAN	;case CAN:
+	jnz	xm_rec1
+	call	xm_in	;if ((c = _inbyte(DLY_1S)) == CAN) {
+	cmp	al,CAN
+	jnz	xm_rec1
+	call	xm_flush	;	flushinput();
+	mov	al,ACK	;	_outbyte(ACK);
+	call	xm_out
+	mov	si,offset xm_msgca	;	return -1; /* canceled by remote */
+xm_err:	stc		;error flag
+	jmp	xm_end	;error exit
+
+xm_rec6:	; we don't support checksum mode, too risky for firmware update !
+	
+	call	xm_flush	;flushinput();
+	mov	al,CAN	;_outbyte(CAN);
+	call	xm_out
+	call	xm_out	;_outbyte(CAN);
+	call	xm_out	;_outbyte(CAN);
+	mov	si,offset xm_msgsy	;sync error
+	jmp	xm_err
+
+	; receive a packet
+xm_rec10:			;start_recv:
+	mov	word [xm_sum],0	;clear CRC sum
+	mov	byte [xm_trych],0	;trychar = 0;
+	les	di,[xm_pt]	;p = xbuff;
+	
+	call	xm_in	;get packet number
+	jb	xm_rec19	;:reject
+	mov	[xm_rxno],al
+	call	xm_in	;get inverted packet number
+	jb	xm_rec19	;:reject
+	mov	[xm_rxno+1],al
+
+	mov	ax,[xm_pktsz]	;get packet data
+	mov	[xm_cnt],ax
+xm_rec11:	call	xm_in	;-> [es:di]
+	jb	xm_rec19	;:reject
+	stosb
+	call	xm_crc	;accumulate CRC
+	dec	word [xm_cnt]
+	jnz	xm_rec11
+	
+	call	xm_in	;get CRC high
+	jb	xm_rec19	;:reject
+	mov	[xm_rxcrc+1],al
+	call	xm_in	;get CRC low
+xm_rec19:	jb	xm_rec20	;:reject
+	mov	[xm_rxcrc],al
+	
+	; validate packet
+
+	mov	ax,[xm_rxcrc]	;compare CRC
+	cmp	ax,[xm_sum]
+	jnz	xm_rec20	;:no
+
+	mov	ax,[xm_rxno]	;received packet number	
+	not	ah
+	cmp	al,ah	;match non-inverted ?
+	jnz	xm_rec20	;:no
+	
+	cmp	al,[xm_pktno]	;compare with expected packet number
+	jz	xm_rec12	;:ok
+	inc	ax	;expected packet number - 1 ?
+	cmp	al,[xm_pktno]
+	jnz	xm_rec20	;no: bad
+	jmp	xm_rec14	;send ACK, but don't update pointer
+
+xm_rec12:	mov	[xm_pt],di	;good packet - update pointer
+	mov	ax,es
+	cmp	di,0	;end of segment ?
+	jnz	xm_rec13
+	add	ax,1000h	;next segment
+	mov	[xm_pt+2],ax	;update segment
+xm_rec13:	inc	byte [xm_pktno]	;increment expected packet number
+	mov	byte [xm_retran],XM_MAXRETRY
+	
+xm_rec14:	dec	byte [xm_retran]
+	jz	xm_rec15	;:too many retries
+	mov	al,ACK
+	call	xm_out
+	jmp	xm_rec0	;continue main loop, clear retry cntr
+	
+xm_rec15:	call	xm_flush
+	mov	al,CAN
+	call	xm_out
+	call	xm_out
+	call	xm_out
+	mov	si,offset xm_msgre	;too many retries
+	jmp	xm_err
+
+xm_rec20:	call	xm_flush	;time-out during packet
+	mov	al,NAK
+	call	xm_out
+	jmp	xm_rec1
+	;
+	; update CRC - AL = data byte, [xm_crc] = CRC accumulator
+	;
+xm_crc:	mov	bx,[xm_sum]
+	xor	al,bh
+	shl	bx,8
+	mov	ah,0
+	mov	si,offset xm_crctab
+	add	si,ax
+	add	si,ax
+	xor	bx,[cs:si]
+	mov	[xm_sum],bx
+	ret
+	
+	even
+xm_crctab:
+	dw	00000,01021,02042,03063,04084,050a5,060c6,070e7
+	dw	08108,09129,0a14a,0b16b,0c18c,0d1ad,0e1ce,0f1ef
+	dw	01231,00210,03273,02252,052b5,04294,072f7,062d6
+	dw	09339,08318,0b37b,0a35a,0d3bd,0c39c,0f3ff,0e3de
+	dw	02462,03443,00420,01401,064e6,074c7,044a4,05485
+	dw	0a56a,0b54b,08528,09509,0e5ee,0f5cf,0c5ac,0d58d
+	dw	03653,02672,01611,00630,076d7,066f6,05695,046b4
+	dw	0b75b,0a77a,09719,08738,0f7df,0e7fe,0d79d,0c7bc
+	dw	048c4,058e5,06886,078a7,00840,01861,02802,03823
+	dw	0c9cc,0d9ed,0e98e,0f9af,08948,09969,0a90a,0b92b
+	dw	05af5,04ad4,07ab7,06a96,01a71,00a50,03a33,02a12
+	dw	0dbfd,0cbdc,0fbbf,0eb9e,09b79,08b58,0bb3b,0ab1a
+	dw	06ca6,07c87,04ce4,05cc5,02c22,03c03,00c60,01c41
+	dw	0edae,0fd8f,0cdec,0ddcd,0ad2a,0bd0b,08d68,09d49
+	dw	07e97,06eb6,05ed5,04ef4,03e13,02e32,01e51,00e70
+	dw	0ff9f,0efbe,0dfdd,0cffc,0bf1b,0af3a,09f59,08f78
+	dw	09188,081a9,0b1ca,0a1eb,0d10c,0c12d,0f14e,0e16f
+	dw	01080,000a1,030c2,020e3,05004,04025,07046,06067
+	dw	083b9,09398,0a3fb,0b3da,0c33d,0d31c,0e37f,0f35e
+	dw	002b1,01290,022f3,032d2,04235,05214,06277,07256
+	dw	0b5ea,0a5cb,095a8,08589,0f56e,0e54f,0d52c,0c50d
+	dw	034e2,024c3,014a0,00481,07466,06447,05424,04405
+	dw	0a7db,0b7fa,08799,097b8,0e75f,0f77e,0c71d,0d73c
+	dw	026d3,036f2,00691,016b0,06657,07676,04615,05634
+	dw	0d94c,0c96d,0f90e,0e92f,099c8,089e9,0b98a,0a9ab
+	dw	05844,04865,07806,06827,018c0,008e1,03882,028a3
+	dw	0cb7d,0db5c,0eb3f,0fb1e,08bf9,09bd8,0abbb,0bb9a
+	dw	04a75,05a54,06a37,07a16,00af1,01ad0,02ab3,03a92
+	dw	0fd2e,0ed0f,0dd6c,0cd4d,0bdaa,0ad8b,09de8,08dc9
+	dw	07c26,06c07,05c64,04c45,03ca2,02c83,01ce0,00cc1
+	dw	0ef1f,0ff3e,0cf5d,0df7c,0af9b,0bfba,08fd9,09ff8
+	dw	06e17,07e36,04e55,05e74,02e93,03eb2,00ed1,01ef0	

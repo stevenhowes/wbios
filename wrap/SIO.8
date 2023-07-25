@@ -1,0 +1,265 @@
+	;
+	; Initialize SC1100 super I/O
+	;
+	; (C)2000-2003 Pascal Dornier / PC Engines; All rights reserved.
+	;
+	; pd 050227 change serial port init -> DTR, RTS set
+	;           disable COM2 IR UART
+	
+SIO_IDX	equ	002eh	;SC1100 SIO
+AB1BASE	equ	0810h	;Access.Bus 1 base
+AB2BASE	equ	0820h	;Access.Bus 2 base
+SWCBASE	equ	0860h	;power control base
+
+#if def	DISA_SIO
+sio_act	equ	0	;don't activate
+#else
+sio_act	equ	1	;activate device
+#endif
+	;
+	; early SIO initialization (jumped to by cs_clr)
+	;
+sio_init0:
+	mov	dx,offset SIO_IDX	;SC1100 SIO base
+	mov	al,20h	;SID register sc75 RO
+	out	dx,al
+	inc	dx
+	in	al,dx
+	dec	dx
+	mov	si,offset sio_tab0	;table
+	cmp	al,0f5h	;verify device ID
+	jz	sio_ini01	;:ok
+#if ! def	DISA_SIO
+;&&&	jmp	cs_clr	;loop back if config failed
+#endif
+sio_ini01: cs:	lodsw	;get table entry
+	out	dx,al	;index
+	inc	dx
+	mov	al,ah
+	out	dx,al	;data
+	dec	dx
+	cmp	si,offset sio_tab0e	;end of table ?
+	jb	sio_ini01	;:no
+	
+#if !def	DISA_SIO
+
+	; configure RTC
+
+	mov	al,0dh
+	out	cm_idx,al
+	in	al,cm_dat
+	in	al,cm_dat
+
+	; set SWC registers (I/O mapped) from table
+	
+	mov	si,offset swctab
+	mov	dx,swcbase
+sio_swc:	cs:	lodsb
+	out	dx,al
+	inc	dx
+	cmp	si,offset swctab9
+	jb	sio_swc
+
+#if def	CONSOLE
+
+	; init COM for 9600 8N1
+	
+	mov	dx,CONSOLE+3
+	mov	al,80h	;DLAB=1: access baud rate register
+	out	dx,al
+
+	mov	al,0	;9600 baud
+	mov	dl,low(CONSOLE+1)
+	out	dx,al
+
+#if def	CFG_BAUD
+	mov	al,byte [cs:CFG_OFS+cfg_baud]	;get baud rate
+	cmp	al,3	;38400 baud
+	jz	sio_baud
+	cmp	al,2	;57600 baud
+	jz	sio_baud
+	cmp	al,12
+	jz	sio_baud
+	mov	al,CONRATE	;set default rate otherwise
+sio_baud:	
+#else	
+	mov	al,CONRATE	;set default rate
+#endif
+	mov	dl,low(CONSOLE)
+	out	dx,al
+	mov	al,COM_INIT and 1Fh	;set parameters
+	mov	dl,low(CONSOLE+3)
+	out	dx,al
+	
+	mov	al,0	;disable interrupts
+	mov	dl,low(CONSOLE+1)
+	out	dx,al
+	
+	mov	al,3	;enable RTS, DTR
+	mov	dl,low(CONSOLE+4)
+	out	dx,al
+#endif
+#endif
+
+#if def	sio2_init
+	jmp	sio2_init	;init second SIO
+#else
+	ret
+#endif
+ 	;
+	; late SIO initialization
+	;
+sio_init:	ret
+	;
+	; NS SC1100 SIO configuration	
+	;
+sio_tab0: ;db	020,0F5	;SID register sc73 RO
+	db	021,001	;SIOCF1 config sc73
+			;global enable
+;	db	022,002	;SIOCF2 config sc73
+;	db	027,001	;SRID revision sc75 R
+	
+	db	007,000	;RTC
+	db	060,000	;base MSB
+	db	061,070	;base LSB
+	db	062,000	;ext base MSB
+	db	063,072	;ext base LSB
+	db	070,008	;RTC int
+	db	071,000	;RTC int type
+	db	0F0,000	;RLR RAM lock sc75
+			;no effect
+	db	0F1,000	;DOMAO month alarm offset sc75
+	db	0F2,000	;MAO month alarm offset sc75
+	db	0F3,000	;CENO century offset sc75
+	db	030,000	;disable
+	db	030,sio_act	;enable
+
+	db	007,005	;Access.bus 1
+	db	060,high(AB1BASE)	;Base MSB
+	db	061,low(AB1BASE)	;Base LSB
+	db	070,000	;AC1 int
+	db	071,003	;AC1 int type
+	db	0F0,004	;AC1 config sc78
+			;enable internal pu
+	db	030,000	;disable
+	db	030,001	;enable
+
+	db	007,006	;Access.bus 2
+	db	060,high(AB2BASE)	;Base MSB
+	db	061,low(AB2BASE)	;Base LSB
+	db	070,000	;AC2 int
+	db	071,003	;AC2 int type
+	db	0F0,004	;AC2 config sc78
+			;enable internal pu
+	db	030,000	;disable
+	db	030,001	;enable
+
+	db	007,001	;SWC system wake-up control
+	db	060,high(SWCBASE)	;Base MSB
+	db	061,low(SWCBASE)	;Base LSB
+	db	070,000	;int
+	db	071,003	;int type
+	db	030,sio_act	;disable
+
+	db	007,008	;COM1
+	db	060,003	;Base MSB
+	db	061,0F8	;Base LSB
+	db	070,004	;COM1 int
+	db	071,003	;COM1 int type
+	db	0F0,082	;COM1 config sc79
+			;normal power, enable bank switch
+	db	030,sio_act	;Activate COM1
+
+	db	007,002	;COM2/IR
+	db	060,002	;Base MSB
+	db	061,0F8	;Base LSB
+	db	070,003	;IR int
+	db	071,003	;IR int type
+	db	074,004	;IR RX_DMA
+	db	075,004	;IR TX_DMA
+	db	0F0,082	;IR config sc77
+			;normal power, enable bank switch
+	db	030,0	;Activate IR -> disable
+
+sio_tab0e:		;end of table
+	;
+	; SWC init table
+	;
+swctab:	db	000,000	;00 WKSR wake status sc94
+	db	001,000	;01 WKC wake control sc94
+	db	002,001	;02 WKCFG wake config sc94 -> bank 1
+;	db	003,000	;03 IRWCR CEIR wake control sc95
+;	db	005,000	;05 IRWAD wake address sc95
+	db	006,000	;06 IRWAM wake address mask sc95
+;	db	007,000	;07 ADSR address shift sc95
+;	db	008,000	;08 IRWTR0L wake range low sc95
+;	db	009,000	;09 IRWTR0H wake range high sc95
+;	db	00A,000	;0A IRWTR1L wake range low sc96
+;	db	00B,000	;0B IRWTR1H wake range high sc96
+;	db	00C,000	;0C IRWTR2L wake range low sc96
+;	db	00D,000	;0D IRWTR2H wake range high sc96
+;	db	00E,000	;0E IRWTR3L wake range low sc96
+;	db	00F,000	;0F IRWTR3H wake range high sc96
+swctab9:
+	;
+	; serial port console
+	;
+#if def	CONSOLE
+
+con_init:	cmp	byte [cs:CFG_OFS+cfg_cons],0	;console disable ?
+	jz	con_init9
+
+	; second entry, unconditional enable
+
+con_init2:
+	xor	ax,ax
+	mov	ds,ax
+
+	; hook serial interrupt
+
+#if def	CONINT
+	cli		;set INT 3 vector = COM2
+#if CONINT = 3
+	mov	word [11*4],con_int
+	mov	word [11*4+2],cs
+#endif
+#if CONINT = 4
+	mov	word [12*4],con_int
+	mov	word [12*4+2],cs
+#endif
+#if CONINT = 5
+	mov	word [13*4],con_int
+	mov	word [13*4+2],cs
+#endif
+	sti
+
+	mov	dx,CONSOLE
+	in	al,dx	;clear receive buffer
+	out	iowait,ax
+	mov	dl,low(CONSOLE+1)
+	mov	al,1	;enable receive interrupt
+	out	dx,al
+	out	iowait,ax
+	mov	dl,low(CONSOLE+4)	;enable interrupt driver
+	in	al,dx
+	or	al,8
+	out	dx,al
+
+	in	al,pic0+1	;enable serial interrupt (int 3)
+#if CONINT = 3
+	and	al,0f7
+#endif
+#if CONINT = 4
+	and	al,0ef
+#endif
+#if CONINT = 5
+	and	al,0df
+#endif
+	out	iowait,ax
+	out	pic0+1,al
+#endif
+	mov	byte [m_conkey],0	;clear key buffer
+	mov	byte [m_console],1	;set serial console flag
+con_init9:
+	ret
+#endif

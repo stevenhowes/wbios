@@ -1,0 +1,241 @@
+	;
+	; TinyBIOS, configured for National SC1100, PC Engines WRAP board
+	;
+	; (C)1998-2003 Pascal Dornier / PC Engines; All rights reserved.
+	;
+	; v1.11
+	; pd 051108 extend PCI reset pulse width
+	;
+	; v1.10
+	; pd 050625 add option for slower DRAM clock
+	;
+	; v1.09
+	; pd 050521 allow USB also for WRAP.2C (will add on WRAP.2D)
+	;           some customers use this for timing.
+	;
+	; v1.08
+	; pd 050502 be less picky about IDE device IDs
+	;           disable IR UART
+	;
+	; v1.07
+	; pd 050417 add delay on warm start (protect CF integrity)
+	;           add serial console disable option
+	;
+	; v1.06
+	; pd 050227 fix serial port configuration; neutral message on
+	;           WRAP setup; add PXE configuration option;
+	;           Int 15 function E820 memory map.
+	;           disable COM2 IR UART.
+	;
+	; v1.05
+	; pd 041021 add platform ID at end of flash
+	; pd 041011 fix PMR setting for GPIO14 (DOGFOOD pin)
+	;
+	; v1.04
+	; pd 040817 add support for 39VF020/39VF040 flash
+	;
+	; v1.03
+	; pd 040705 Configure latency + line size on ALL slots (incl. 68).
+	;
+
+; start offset
+	
+STARTOFS	equ	09000	;start offset, must be multiple of 256
+CFG_OFS	equ	08000	;start of config block
+
+	db	STARTOFS dup 0	;(start data cut out by BIOSSUM.EXE)
+
+#if def	CFG_OFS
+	include	wrap_cfg.8	;include config offsets
+#endif
+
+; platform specific options
+
+;&&&PCI_WAIT:			;add PCI startup delay
+
+WRAP2A:			;select new interrupt mapping
+
+WRAP:			;select WRAP platform
+
+ROM_BEG	equ	0c800	;start of option ROM scan
+ROM_END	equ	0f000	;end of option ROM scan
+
+PCI_NORST	equ	090	;don't reset 5530
+PCI_NORST2 equ	098	;don't reset USB
+PCI_NORST3 equ	000	;don't reset GX1
+
+; PCI options
+
+INTA	equ	9	;PCI interrupt assignment
+INTB	equ	10	;also see PCI_TAB
+INTC	equ	11
+INTD	equ	12
+INT0	equ	0ff	;no interrupt assigned
+
+; general options
+
+;BOOTBEEP:		;enables beep on bootup
+
+;DEBUG:			;debug mode (Int 13 trace etc).
+
+;QUICKMEM:		;no memory test (fill only)
+MTEST_1PASS:		;quicker memory test (1 pass)
+
+; hard disk, boot options
+
+FORCE_LBA	equ	1024	;use LBA if more than x cylinders
+
+;BOOT_AC:			;Boot A: first, then C:
+			;comment out for C: then A:
+
+;HD_WAIT	equ	20	;Hard disk wait, max. x seconds
+;HD_ENA	equ	0	;don't check HDD status before x seconds
+
+HD_INFO:			;display hard disk info
+
+HDD_LOOSE:		;don't be picky about device ID
+
+HDD_EDD:			;enable EDD support
+
+HDD_LBA:			;enable LBA support
+
+HDD_NOSLAVE:		;don't look (and wait) for slave device
+
+;HD_TIME	equ	080	;commented out = HDD power down disabled
+			;0 = code included, but no timeout
+			;1..240 = timeout x * 5 s units
+			;241..251 = timeout (x-240)*30 min
+
+; keyboard options
+
+NO_KBC:			;don't fail if KBC not present
+
+INT15_24:			;option: A20 gate functions
+
+;LED_UPDATE:		;Define to enable keyboard LED updates
+			;(NumLock, CapsLock, ScrollLock).
+			;Not recommended for real-time apps.
+	
+; serial port options
+
+CONSOLE	equ	03F8	;serial port for console = COM1
+CONRATE	equ	12	;default baudrate
+			;3 = 38400, 12 = 9600 - override by
+			;CFG_BAUD
+CONINT	equ	4	;interrupt for console
+COM_NO2400:		;prevent DOS 2400 baud setting...
+
+	;
+	; Signon prompt (must be at start of binary, 4KB step,
+	; for patch utility to work)
+	;
+copysig:	db	"##"	;
+copysum:	db	0	;checksum
+copyrt:	db	"PC Engines WRAP.2B/2C v1.11",13,10,0
+	db	copysig+256-$ dup (0)	;pad to 256 byte limit
+
+	include	..\message.8
+	;
+	; Include files
+	;	
+	include	..\equ.8	;general equates
+	include	gxm.8	;SC1200 chipset / system specific code
+#if def	DRAMOPT
+	include	sdramopt.8	;SC1200 SDRAM timing optimization
+	include	i2c.8	;SC1200 I2C routines
+#endif
+	include	sio.8	;super I/O initialization
+	include	post.8	;POST / local modifications
+	include ..\post2.8	;POST routines
+	include	..\debug.8	;Debug routines, comment out
+	include ..\vid.8	;video BIOS
+	include	..\int1x.8	;miscellaneous interrupts
+	include ..\fdd.8	;floppy BIOS
+	include	..\hdd.8	;hard disk BIOS
+	include	..\com.8	;serial BIOS
+	include ..\kbd.8	;keyboard BIOS
+	include	..\kbtab.8	;keyboard table
+	include ..\lpt.8	;printer BIOS
+	include	..\rtc.8	;timer / RTC BIOS
+	include ..\pci.8	;PCI BIOS
+	include	..\pcipnp.8	;PCI plug & play
+#if def	PS2MOUSE
+	include	..\ps2mous.8	;PS/2 mouse BIOS
+#endif
+#if def	CFG_OFS
+	include	wrap_set.8	;WRAP setup module
+	include	wrap_xm.8	;WRAP xmodem module
+#endif
+	;
+	; OEM decision: verify diagnostic flags to decide
+	; whether to boot or display error messages
+	;
+decide:	mov	dx,GPIOBASE+0	;GPDO0 GPIO out 0 sc196
+	in	eax,dx
+	or	eax,040008	;turn off LED2/G3 and LED3/G18
+	out	dx,eax
+	
+	mov	dx,LPCBASE+010	;LAD_EN LPC address enable sc204
+	in	eax,dx
+	and	eax,07FFF	;disable LPC flash
+	out	dx,eax
+
+	mov	ax,04008	;PCI latency, cache line size
+	mov	ebx,08000680C	;set for miniPCI + LAN
+decide2:	call	pci_setw	;pd 040705 fix
+	inc	bh
+	cmp	bh,090
+	jb	decide2
+	
+#if def	wrap_set
+	call	wrap_set
+#endif
+	ret
+	;
+	; BIOS writeable configuration data
+	;
+	include	..\data.8
+	;
+	; INT 1A legacy entry point
+	;
+	db	(0fe6e-$) dup 0ffh	;explicitly documented in the
+	jmp	int1a	;PCI BIOS spec.
+	;
+	; PCI interrupt assignment table
+	;
+PCI_TAB:	db	INT0,INT0,INT0,INT0	;00 north bridge
+	db	INT0,INT0,INT0,INT0	;08
+	db	INT0,INT0,INT0,INT0	;10
+	db	INT0,INT0,INT0,INT0	;18
+	db	INT0,INT0,INT0,INT0	;20
+	db	INT0,INT0,INT0,INT0	;28
+	db	INT0,INT0,INT0,INT0	;30
+	db	INT0,INT0,INT0,INT0	;38
+	db	INT0,INT0,INT0,INT0	;40
+	db	INT0,INT0,INT0,INT0	;48
+	db	INT0,INT0,INT0,INT0	;50
+	db	INT0,INT0,INT0,INT0	;58
+	db	INT0,INT0,INT0,INT0	;60
+#if def	WRAP2A
+	db	INTD,INTA,INT0,INT0	;68 AD23 miniPCI J6
+	db	INTB,INT0,INT0,INT0	;70 AD24 LAN U13
+	db	INTA,INT0,INT0,INT0	;78 AD25 LAN U12
+	db	INTC,INT0,INT0,INT0	;80 AD26 LAN U11
+	db	INTA,INTD,INT0,INT0	;88 AD27 miniPCI J5
+#else
+	db	INT0,INT0,INT0,INT0	;68
+	db	INTD,INTA,INT0,INT0	;70 AD24 miniPCI J6
+	db	INTB,INT0,INT0,INT0	;78 AD25 LAN U12
+	db	INTC,INT0,INT0,INT0	;80 AD26 LAN U11
+	db	INTA,INTD,INT0,INT0	;88 AD27 miniPCI J5
+#endif
+	db	INTA,INTB,INTC,INTD	;90 AD28 south bridge
+	db	INTA,INTB,INTC,INTD	;98 AD29 USB
+	db	INT0,INT0,INT0,INT0	;remaining devices
+pci_tab9:			;end of table
+	include	..\tables.8	;ISA initialization tables
+
+	safeorg	0ffd0
+	db	"PC Engines WRAP.2",0
+	
+	include	..\reset.8	;reset vector

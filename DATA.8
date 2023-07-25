@@ -1,0 +1,105 @@
+	;
+	; BIOS configuration data
+	;
+	; (C)1997-2003 Pascal Dornier / PC Engines; All rights reserved.
+	; This file is licensed pursuant to the COMMON PUBLIC LICENSE 0.5.
+	;
+	; This data is modified to store system configuration, such as
+	; PCI data, hard disk parameters, etc.
+	;
+	; pd 050206 add Int15 E820 system memory map
+	; pd 030304 add support for four drives, add IDE I/O port and
+	;           master / slave information
+	; pd 991020 add hd_top
+	;
+	even
+	db	"_DAT"	;header for checksum utility
+	dw	d_sum-d_beg	;pointer to checksum
+	
+d_beg:			;start of data	
+	;
+	; system memory map for Int15 E820
+	;
+e820map:	dd	0,0	;index 0: base memory
+d_basmem:	dd	0,0	;size of base memory
+	dd	1	;type 1 = memory
+	
+	dd	0000f0000,0	;index 1: BIOS ROM
+	dd	000010000,0
+	dd	2	;type 2 = reserved
+	
+	dd	0fff00000,0	;index 2: high BIOS
+	dd	000100000,0
+	dd	2	;type 2 = reserved
+	
+	dd	000100000,0	;index 3: extended memory
+d_exmem:	dd	0,0	;size of extended memory
+	dd	1	;type 1 = memory
+e820mape:
+	;
+	; Hard disk parameters
+	;
+hd_prm0:	db	dpt_port dup 0	;drive 80
+	dw	hdc	;primary port
+	db	0,0	;dpt_dev master
+hd_prm1:	db	dpt_port dup 0	;drive 81
+	dw	hdc	;primary port
+	db	0,10h	;dpt_dev slave
+#if def	HD_4DRV
+	db	dpt_port dup 0	;drive 82
+	dw	hdc2	;secondary port
+	db	0,0	;dpt_dev master
+	db	dpt_port dup 0	;drive 83
+	dw	hdc2	;secondary port
+	db	0,10h	;dpt_dev slave
+hd_prm99:			;end of table
+hd_top:	db	84h	;top HDD + 1
+hd_good:	db	01h	;set if last drive detected
+#else
+hd_prm99:
+hd_top:	db	82h	;top HDD + 1
+hd_good:	db	01h	;set if last drive detected
+#endif
+	;
+	; PCI data
+	;
+	
+	; this is a procedure to avoid problems in protected mode access...
+	
+getlbus:	db	0b0h	;MOV AL
+d_lastbus: db	0	;last PCI bus
+	ret
+
+#if def	CDBOOT
+	even
+d_cdlba:	dw	0,0	;base LBA for last session
+d_cdbase:	dw	0	;CD-ROM port base
+d_cddrv:	db	0b0h	;slave drive
+d_cdsec:	db	15	;sectors per track
+d_cdflag:	db	0	;1 = enable CD emulation
+
+#endif
+	;
+	; Data checksum
+	;
+d_sum:	db	0	;checksum, end of data block
+			;(filled in by utility)
+	;
+	; calculate data checksum
+	;
+d_dosum:	
+#if ! def	M6117
+	wbinvd		;write back cache
+#endif
+	mov	al,0
+	mov	si,offset d_beg
+	mov	cx,d_sum-d_beg
+d_dosum1:	add 	al,[cs:si]	;calculate checksum
+	inc	si
+	loop	d_dosum1
+	neg	al
+	mov 	[cs:si],al
+#if ! def	M6117
+	wbinvd
+#endif
+	ret

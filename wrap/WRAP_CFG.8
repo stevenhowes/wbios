@@ -1,0 +1,39 @@
+	;
+	; WRAP configuration block, rewritten by setup module
+	;
+	; pd 050625 added cfg_dram
+	; pd 050417 added cfg_cons
+	; pd 030807 initial code
+	;
+cfg_baud	equ	0	;offset for baud rate
+cfg_lba	equ	2	;offset for LBA / CHS selection
+cfg_usb	equ	4	;offset for USB enable / disable
+cfg_pxe	equ	6	;offset for PXE enable / disable
+cfg_cons	equ	8	;offset for console enable / disable
+cfg_dram	equ	10	;offset for DRAM speed config
+
+cfg_size	equ	12	;size of config block (dword multiple)
+
+#if ! def	CFG_OFS		;set CFG_OFS in BIOS main file !
+
+	org	cfg_baud
+	dw	3	;3 = 38400, 12 = 9600, 2 = 57600
+
+	org	cfg_lba	;default to 9600 baud if other value
+	dw	0	;1..1024 = threshold for LBA mode
+			;default to CHS if other value
+			
+	org	cfg_usb	;default to disable
+	dw	0	;0000 = disable, FFFF = enable
+	
+	org	cfg_pxe	;default to disable
+	dw	0	;0000 = disable, FFFF = enable
+	
+	org	cfg_cons	;default to enable
+	dw	0ffff	;0000 = disable, FFFF = enable
+	
+	org	cfg_dram	;default to 2.5x clock divider
+	dw	0	;0000 = 2.5x, FFFF = 3.0x
+			
+	db	(01000-$) dup (0ff)	;pad the rest of this block
+#endif

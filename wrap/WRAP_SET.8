@@ -1,0 +1,443 @@
+	;
+	; WRAP setup module - called by DECIDE
+	;
+	; This currently supports SST 39VF010 / 39VF512.
+	;
+	; pd 050625 add DRAM config
+	; pd 050521 allow USB for WRAP.2C
+	; pd 050417 add CONS option
+	; pd 050227 change to neutral message, add USB & PXE options
+	; pd 040817 add 39VF020 (not tested) / 39VF040 support
+	; pd 040713 add network boot option (N key)
+	; pd 040511 add 57600 baud option
+	;
+wrap_set:	xor	ax,ax	;copy config block from flash to
+	mov	ds,ax	;temp buffer
+	mov	es,ax
+	mov	si,cfg_ofs
+	mov	di,tmp_buf
+ws_copy:	cs:	movsw
+	cmp	di,tmp_buf+cfg_size
+	jb	ws_copy
+	
+	; if serial console disabled: look for pushbutton
+
+#if def	WRAP1C	
+	test	byte [tmp_buf+cfg_cons],1
+	jnz	wrap_se1	;:normal console mode
+	mov	dx,GPIOBASE+20	;check button
+	in	ax,dx
+	test	ax,0100h	;bit 8 = 0 ?
+	jnz	wrap_se1	;:not pressed
+	call	con_init2	;enable serial console
+	jmp	wrap_se2	;enter setup
+#endif
+
+wrap_se1:	mov	ah,1	;any key in buffer ?
+	int	16h
+	jnz	ws_flush	;yes - eat them, see if setup mode
+	ret
+
+net_boot:	int	18h	;call network boot first
+	ret		;(not installed: message)
+
+ws_flush:	call	ws_getc	;get a key, convert to upper case
+	cmp	al,"N"	;network boot ?
+	jz	net_boot	;:yes
+	cmp	al,"S"	;setup ?
+	jnz	wrap_se1	;no: eat
+
+wrap_se2:	mov	si,offset ws_msgin	;display start message
+	call	v_msg
+
+ws_main:	call	ws_menu	;display menu
+	call	ws_getc	;get keystroke
+	cmp	al,"9"	;9600 baud ?
+	jz	ws_96
+	cmp	al,"3"	;38400 baud ?
+	jz	ws_38
+	cmp	al,"5"	;57600 baud ?
+	jz	ws_56
+	cmp	al,"L"	;LBA mode ?
+	jz	ws_lba
+	cmp	al,"C"	;CHS mode ?
+	jz	ws_chs
+	cmp	al,"U"	;USB toggle ?
+	jz	ws_usb
+	cmp	al,"D"	;DRAM toggle ?
+	jz	ws_dram
+	cmp	al,"E"	;PXE toggle ?
+	jz	ws_pxe
+	cmp	al,"R"	;console toggle ?
+	jz	ws_cons
+	cmp	al,"X"	;XMODEM upload ?
+	jz	ws_xmo
+	cmp	al,"Q"	;exit ?
+	jnz	ws_main	;no: loop back
+
+	mov	si,offset ws_msgyn	
+	cmp	word [tmp_buf+cfg_cons],0
+	jnz	ws_ex0
+	mov	si,offset ws_msgr2	;display serial console warning
+ws_ex0:	call	v_msg
+ws_ex1:	call	ws_getc	;get keystroke
+	cmp	al,"N"
+	jz	ws_rst	;no -> exit immediately
+	cmp	al,"Y"
+	jnz	ws_ex1
+	call	ws_prog	;write config data to flash
+	;
+	; force a system reset
+	;
+ws_rst:	mov	ebx,080009044	;reset control sc170
+	mov	al,0f	;system wide reset
+	call	pci_setb
+ws_rst2:	hlt		;wait for reset to kick in
+	jmp	ws_rst2
+	;
+	; set 9600 baud mode
+	;
+ws_96:	mov	word [tmp_buf+cfg_baud],12
+	jmp	ws_main
+	;
+	; set 38400 baud mode
+	;
+ws_38:	mov	word [tmp_buf+cfg_baud],3
+	jmp	ws_main
+	;
+	; set 57600 baud mode
+	;
+ws_56:	mov	word [tmp_buf+cfg_baud],2
+	jmp	ws_main
+	;
+	; set LBA mode
+	;
+ws_lba:	mov	word [tmp_buf+cfg_lba],1
+	jmp	ws_main
+	;
+	; set CHS mode
+	;
+ws_chs:	mov	word [tmp_buf+cfg_lba],0
+	jmp	ws_main
+	;
+	; toggle USB mode
+	;
+ws_usb:	not	word [tmp_buf+cfg_usb]
+	jmp	ws_main
+	;
+	; toggle DRAM mode
+	;
+ws_dram:	not	word [tmp_buf+cfg_dram]
+	jmp	ws_main
+	;
+	; toggle serial console mode
+	;
+ws_cons:	not	word [tmp_buf+cfg_cons]
+	jmp	ws_main
+	;
+	; toggle PXE mode
+	;
+ws_pxe:	not	word [tmp_buf+cfg_pxe]
+	jmp	ws_main
+	;
+	; XMODEM upload
+	;
+ws_xmo:	xor	ax,ax	;&&&
+	mov	ds,ax	;&&&
+	mov	dword [xm_pt],010000000	;destination 1000:0000
+	call	xm_rec	;receive file
+	jb	ws_main	;:error
+	mov	ax,01000h	;check header
+	mov	es,ax
+	cmp	word [es:0],'BT'	;signature: TB
+	jnz	ws_main	;no: don't execute
+	les	di,[xm_pt]	;get pointer to end of upload
+			;(for length verification)
+	call 	01000:0002	;execute uploaded code
+	jmp	ws_main	;back to menu
+	;
+	; display menu
+	;
+ws_menu:	mov	ax,"9"	;not 9600 baud
+	mov	bl,[tmp_buf+cfg_baud]
+	cmp	bl,3	;38400 baud ?
+	jz	ws_menu2
+	cmp	bl,2	;57600 baud ?
+	jz	ws_menu2
+	mov	ah,0ff	;9600 baud default
+ws_menu2:	mov	si,offset ws_msg96
+	push	ax	;save status
+	call	ws_item	;display item
+	pop	ax
+	
+	mov	ax,"3"
+	cmp	byte [tmp_buf+cfg_baud],3
+	jnz	ws_menu2a
+	not	ah
+ws_menu2a:
+	mov	si,offset ws_msg38
+	call	ws_item
+	
+	mov	ax,"5"
+	cmp	byte [tmp_buf+cfg_baud],2
+	jnz	ws_menu2b
+	not	ah
+ws_menu2b:
+	mov	si,offset ws_msg56
+	call	ws_item
+	
+	mov	ax,[tmp_buf+cfg_lba]
+	and	ax,ax
+	jz	ws_menu3
+	mov	ah,0ff	;LBA mode active
+ws_menu3:	push	ax	;save for LBA
+	not	ah	;CHS mode first
+	mov	al,"C"
+	mov	si,offset ws_msgch
+	call	ws_item
+	pop	ax
+	
+	mov	al,"L"	;LBA item
+	mov	si,offset ws_msglb
+	call	ws_item
+	
+	mov	ax,[tmp_buf+cfg_pxe]
+	mov	al,"E"	;PXE item
+	mov	si,offset ws_msgpx
+	call	ws_item
+
+	mov	ax,[tmp_buf+cfg_usb]
+	mov	al,"U"	;USB item
+	mov	si,offset ws_msgu1
+	call	ws_item
+
+	mov	ax,[tmp_buf+cfg_dram]
+	mov	al,"D"	;DRAM item
+	mov	si,offset ws_msgd1
+	call	ws_item
+
+	mov	ax,[tmp_buf+cfg_cons]
+	mov	al,"R"	;serial console
+	mov	si,offset ws_msgr1
+	call	ws_item
+	
+	mov	ax,"X"
+	mov	si,offset ws_msgup
+	call	ws_item
+	
+	mov	ax,"Q"
+	mov	si,offset ws_msgex	;fall through
+	;
+	; display menu item AL = character, AH = 00 -> (), AH = FF -> [ ]
+	; SI = text
+	;
+ws_item:	push	ax
+	mov	al,"("
+	cmp	ah,0
+	jz	ws_item2
+	mov	al,"*"	;highlight active with *
+ws_item2:	call	putc
+	pop	ax
+	push	ax
+	call	putc	;display character of menu item
+	pop	ax
+	mov	al,")"
+	cmp	ah,0
+	jz	ws_item3
+	mov	al,"*"	;highlight active with *
+ws_item3:	call	putc
+	jmp	v_msg	;display string
+	;
+	; get a keystroke, convert to upper case
+	;
+ws_getc:	mov	ah,0
+	int	16h
+	cmp	al,"a"
+	jb	ws_getc2
+	cmp	al,"z"
+	ja	ws_getc2
+	sub	al,20h
+ws_getc2:	ret
+	;
+	; Texts
+	;
+ws_msgin:	db	10,"BIOS setup:",13,10,10,0
+ws_msg96:	db	" 9600 baud ",0
+ws_msg38:	db	" 38400 baud ",0
+ws_msg56:	db	" 57600 baud",13,10,0
+ws_msgch:	db	" CHS mode ",0
+ws_msglb:	db	" LBA mode ",13,10,0
+ws_msgu1: db	" USB enable ",13,10,0
+ws_msgr1: db	" Serial console enable ",13,10,0
+ws_msgd1: db	" Conservative DRAM timing ",13,10,0
+ws_msgpx:	db	" Etherboot enable ",13,10,0
+ws_msgup:	db	" Xmodem upload ",0
+ws_msgex: db	" Quit",13,10,0
+#if def	WRAP1C
+ws_msgr2:	db	10,"Warning: Serial console disable selected.",13,10
+	db	"To re-enable serial console and enter setup, ",13,10
+	db	"keep switch pressed during power up.",13,10
+#else
+ws_msgr2:	db	13,10,10,"WARNING: Serial console disable selected.",13,10
+	db	"The only way to re-enable serial console will be to",13,10
+	db	"boot from CF card and reprogram the BIOS !",13,10
+#endif
+	; message continued !
+	
+ws_msgyn:	db	"Save changes Y/N ?",0
+ws_msgpg:	db	13,10,"Writing setup to flash... ",0
+ws_msgok:	db	"OK",13,10,0
+ws_msgfa:	db	"FAIL",13,10,0
+
+cfg_128k	equ	0fffe0000	;128KB ROM base
+cfg_rom	equ	0ffff0000	;64KB ROM base
+cfg_phys	equ	cfg_rom+CFG_OFS	;physical address of config block
+xm_base	equ	tmp_buf+cfg_size	;base for xmodem variables
+	;
+	; program flash config block
+	;
+	; note: DS / ES changed to unreal mode
+	;
+ws_prog:	mov	si,offset ws_msgpg
+	call	v_msg
+
+	call	rom_open	;look for flash
+	jb	ws_prog8	;:error
+	
+	mov	edi,cfg_phys
+	call	rom_era	;erase block
+	jb	ws_prog8	;:error
+	
+	mov	esi,tmp_buf
+	mov	edi,cfg_phys
+	mov	ecx,cfg_size
+	call	rom_set	;program data
+	jb	ws_prog8	;:error
+	
+	mov	esi,tmp_buf
+	mov	edi,cfg_phys
+	mov	cx,cfg_size / 4
+	call	rom_cmp	;verify data
+	mov	si,offset ws_msgok
+	jnb	ws_prog9
+ws_prog8:	mov	si,offset ws_msgfa	;fail message
+ws_prog9:	call	v_msg
+	jmp	rom_exit	;close flash access
+	;
+	; open flash access
+	;
+rom_open:	mov	ebx,80009052h	;9052 enable flash writes sc172
+	call	pci_getb
+	or	al,2	;enable flash write
+	call	pci_setb
+	
+	; read device ID
+	
+	call	getunreal	;enter unreal mode
+	mov	ebx,cfg_rom
+	mov	byte [ebx+05555],0aa	;software ID
+	mov	byte [ebx+02aaa],055
+	mov	byte [ebx+05555],090
+	out	iowait,al	;short delay
+	mov	ax,[ebx]	;read the device ID
+	mov	byte [ebx],0f0	;exit ID mode
+
+	cmp	ax,0d5bf	;39VF010 ?
+	jz	rom_open9	;yes: ok
+	cmp	ax,0d4bf	;39VF512 ?
+	jz	rom_open9	;yes: ok
+	cmp	ax,0d6bf	;39VF020 ?
+	jz	rom_open9	;yes: ok
+	cmp	ax,0d7bf	;39VF040 ?
+	jz	rom_open9
+rom_open8: stc		;error exit
+rom_open9: ret
+	;
+	; erase setup
+	;
+rom_clr:	call	getunreal
+	mov	ebx,cfg_128k
+	mov	byte [edi+05555],0aa	;erase setup
+	mov	byte [edi+02aaa],055
+	mov	byte [edi+05555],080
+	mov	byte [edi+05555],0aa	;erase command
+	mov	byte [edi+02aaa],055
+	ret	
+	;
+	; chip erase flash
+	;
+rom_zap:	call	rom_clr	;erase setup
+	mov	edi,ebx	;(cfg_128k)
+	mov	byte [edi+05555],010	;chip erase command
+	mov	bx,100	;wait for 100 ms
+	call	cs_waitbx
+	mov	ecx,08000	;128KB
+rom_zap2:	xor	eax,eax	;check for erase
+	dec	eax
+	a4 repz	scasd
+	jnz	rom_open8	;:failure
+	clc
+	ret
+	;
+	; block erase flash [edi]
+	;
+rom_era:	call	rom_clr	;erase setup
+	mov	byte [edi],030	;sector erase command @ sector address
+	mov	bx,25	;wait for 25 ms
+	call	cs_waitbx
+	mov	ecx,0400	;4 KB
+	jmp	rom_zap2	;check for erase
+	;
+	; program flash [esi] -> [edi] (ecx bytes)
+	;
+rom_set:	call	getunreal
+	mov	ebx,cfg_128k	;base for command registers
+	
+rom_set3:	mov	al,[esi]	;data byte
+	cmp	al,0ff
+	jz	rom_set5	;blank -> skip
+	
+	mov	byte [ebx+05555],0aa	;byte program command
+	mov	byte [ebx+02aaa],055
+	mov	byte [ebx+05555],0a0
+	mov	[edi],al
+	
+	mov	dx,1000	;time-out
+rom_set4:	cmp	[edi],al	;correct data ?
+	jz	rom_set5	;:yes
+	dec	dx
+	jnz	rom_set4
+	jmp	rom_open9	;program failure, bail
+	
+rom_set5:	inc	esi
+	inc	edi
+	dec	ecx
+	jnz	rom_set3	;:another
+	clc		;ok exit
+	ret
+	;
+	; compare flash [esi],[edi] (cx dwords)
+	;
+	; must be dword multiples
+	;
+rom_cmp:	call	getunreal
+rom_cmp2:	mov	eax,[esi]
+	cmp	[edi],eax
+	jnz	rom_open8	;:failure
+	lea	esi,[esi+4]
+	lea	edi,[edi+4]
+	dec	cx
+	jnz	rom_cmp2
+	clc
+	ret		;ok exit
+	;
+	; close flash access
+	;
+rom_exit:	mov	eax,80009052h	;9052 disable flash writes sc172
+	call	pci_getb
+	and 	al,not 2	;disable flash write
+	call	pci_setb
+	xor	ax,ax	;restore segments
+	mov	ds,ax
+	mov	es,ax
+	ret	

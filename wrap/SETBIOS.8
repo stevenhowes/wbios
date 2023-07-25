@@ -1,0 +1,360 @@
+	;
+	; WRAP BIOS update
+	;
+	; pd 030807
+	; pd 040115 compare before erase, retry message on failure
+	;
+	org	0100
+	
+	jmp	start
+          ;
+          ; variables
+          ;
+          even
+
+rombase	equ	0fffe0000
+port61	equ	061
+iowait	equ	0eb
+
+bufpt:	dd	0	;buffer pointer
+devid:	dw	0	;device ID
+file:	dw	0	;file handle
+bufseg:	dw	0	;buffer segment
+curseg:	dw	0	;current segment
+count:	db	4	;number of 32KB blocks to be read
+rom64:	db	0	;1 = 64KB flash
+
+msg_strt:	db	"WRAP flash update",13,10
+	db	"Reading 128KB flash image "
+filename:	db	"wrap.rom",0	;file name
+msg_io:	db	" - I/O error !",13,10,0
+msg_open:	db	13,10,"Flash ID",0
+msg_fail:	db	" - FAIL !",13,10,0
+msg_zap:	db	13,10,"Erase",0
+msg_set:	db	" Program",0
+msg_cmp:	db	" Verify",0
+msg_ok:	db	13,10,"Flash update OK.",13,10,0
+msg_try:	db	"(R)etry (Q)uit ?",13,10,0
+msg_same:	db	13,10,"Flash verify OK.",13,10,0
+	;
+	; main code
+	;
+start:	cld
+	mov	sp,offset stack1
+
+	mov	si,offset msg_strt
+	call	v_msg
+
+	; set segment values
+	
+	xor	eax,eax	;set buffer segment
+	mov	ax,cs
+	shl	eax,4	;-> physical
+	add	eax,offset stack1
+	mov	[bufpt],eax
+	shr	eax,4	;-> segment
+	mov	[bufseg],ax
+	mov	[curseg],ax
+	
+	xor	eax,eax	;set GDT physical address
+	mov	ax,cs
+	shl	eax,4
+	add	eax,offset gdt
+	mov	dword [gdtadr],eax
+	
+	; open image file
+	
+	mov	dx,offset filename
+	mov	ax,3d00h	;open file
+	int	21h
+	mov	[file],ax	;save file handle
+	jb	long ioerr
+
+start3:	mov	bx,[file]	;file handle
+	xor	dx,dx	;destination DS:DX
+	mov	ds,[curseg]
+	mov	cx,8000h	;read 32KB
+	mov	ah,03f	;block read
+	int	21h
+	push	cs	;restore DS
+	pop	ds
+	jb	ioerr
+	cmp	ax,8000h	;read all ?
+	jnz	ioerr
+	add	word [curseg],0800	;update segment
+	dec	byte [count]
+	jnz	start3	;:another block
+
+	mov	ah,03e	;close
+	mov	bx,[file]	;file handle
+	int	21h
+	jb	ioerr
+
+start4:	mov	si,offset msg_open	;look for flash
+	call	v_msg
+	call	rom_open	;read device ID
+	
+	call	rom_cmp	;verify flash
+	mov	si,offset msg_same
+	jnb	start9	;:same, give message and exit
+		
+	mov	si,offset msg_zap	;erase flash
+	call	v_msg
+	call	rom_zap
+	
+	mov	si,offset msg_set	;program flash
+	call	v_msg
+	call	rom_set
+	
+	mov	si,offset msg_cmp	;verify flash
+	call	v_msg
+	call	rom_cmp
+	mov	si,offset msg_ok
+	jnb	start9	;:ok
+
+	mov	si,offset msg_fail
+barf:	call	getreal
+	call	v_msg	;display error message	
+	mov	si,offset msg_try
+	call	v_msg	;ask for retry
+	
+start5:	mov	ah,0	;get key
+	int	16h
+	cmp	al,"Q"
+	jz	terminat	;Q = exit
+	cmp	al,"q"
+	jz	terminat
+	cmp	al,"R"
+	jz	start4	;R = retry
+	cmp	al,"r"
+	jz	start4
+	jmp	start5
+
+ioerr:	mov	si,offset msg_io	;I/O error	
+start9:	call	v_msg	;display message
+terminat:	call	rom_exit	;write-protect flash
+	mov	ax,4c00h	;terminate
+	int	21h
+	;
+	; display string [SI] -> TTY
+	;
+v_msg:	cs: 	lodsb	;get character
+	and	al,al	;0 = end
+	jz	v_msg9
+	mov	ah,0eh	;TTY output
+	mov	bh,0	;page 0
+	int	10h
+	jmp	v_msg
+v_msg9:	ret
+	;
+	; global descriptor table (GDT) for unreal mode
+	;
+	db	(($+15) and 0fff0h)-$ dup 0ffh	;even 16
+gdt:	dw	gdtend-gdt-1	;GDT limit
+gdtadr:	dw	gdt,000fh	;linear address of GDT
+	dw	0
+	dw	0ffffh,0,9300h,008fh	;4G data segment, accessed
+gdtend:
+	;
+	; Enter unreal (4GB segment) mode -> change DS,ES selector
+	;
+	; based on code in DDJ 7/90
+	;
+getunreal: cli		;disable interrupts
+	cs:	lgdt [gdt]	;load GDT (in data module, writeable)
+	
+	mov	eax,cr0
+	or	al,1	;enable protected mode
+	mov	cr0,eax
+	jmp	short getunrl2	;flush queue
+getunrl2:	mov	bx,8	;selector
+	mov	ds,bx
+	mov	es,bx
+	and	al,0feh	;exit protected mode
+	mov	cr0,eax
+	ret
+	;
+	; get back to normal segments
+	;
+getreal:	push	cs
+	pop	ds
+	sti
+	ret
+	;
+	; open flash access
+	;
+rom_open:	mov	eax,80009050h	;9052 enable flash writes sc172
+	mov	dx,0cf8
+	out	dx,eax
+	xchg	eax,ebx
+	mov	dl,0fe
+	in	al,dx
+	or	al,2	;enable flash write
+	xchg	eax,ebx
+	mov	dl,0f8
+	out	dx,eax
+	mov	dl,0fe
+	xchg	eax,ebx
+	out	dx,al
+	
+	; read device ID
+	
+	call	getunreal	;enter unreal mode
+	mov	ebx,rombase
+	mov	byte [ebx+05555],0aa	;software ID
+	mov	byte [ebx+02aaa],055
+	mov	byte [ebx+05555],090
+	out	iowait,al	;short delay
+	mov	ax,[ebx]	;read the device ID
+	mov	byte [ebx],0f0	;exit ID mode
+	call	getreal
+	mov	[devid],ax
+
+	; check device ID
+
+	cmp	al,0bf	;SST ?
+	jnz	rom_open9	;no: fail
+	cmp	ah,0b5	;39SF010
+	jz	rom_open8
+	cmp	ah,0d5	;39VF010
+	jz	rom_open8
+	inc	byte [rom64]	;set flag for 64KB flash
+	cmp	ah,0b4	;39SF512
+	jz	rom_open8
+	cmp	ah,0d4	;39VF512
+	jz	rom_open8
+	cmp	ah,0d6	;39VF020
+	jz	rom_open8
+	cmp	ah,0d7	;39VF040
+	jnz	rom_open9
+rom_open8:
+	ret
+rom_open9:
+	mov	si,offset msg_fail
+	jmp	barf
+	;
+	; close flash access
+	;
+rom_exit:	mov	eax,80009050h	;9052 disable flash writes sc172
+	mov	dx,0cf8
+	out	dx,eax
+	xchg	eax,ebx
+	mov	dl,0fe
+	in	al,dx
+	and 	al,not 2	;disable flash write
+	xchg	eax,ebx
+	mov	dl,0f8
+	out	dx,eax
+	mov	dl,0fe
+	xchg	eax,ebx
+	out	dx,al
+	ret
+	;
+	; chip erase flash
+	;
+rom_zap:	call	getunreal	;enter unreal mode
+	mov	ebx,rombase
+	mov	byte [ebx+05555],0aa	;erase setup
+	mov	byte [ebx+02aaa],055
+	mov	byte [ebx+05555],080
+	mov	byte [ebx+05555],0aa	;erase command
+	mov	byte [ebx+02aaa],055
+	mov	byte [ebx+05555],010
+	
+	mov	bx,100	;wait for 100 ms
+	call	cs_waitbx
+	
+	mov	eax,0ffffffff	;check for erase
+	mov	ecx,08000	;128KB
+	mov	edi,rombase
+	a4 repz	scasd
+	jnz	rom_open9	;:failure
+	jmp	getreal
+	;
+	; program flash [bufpt] -> [rombase]
+	;
+rom_set:	mov	esi,[bufpt]
+	mov	edi,rombase
+	mov	ecx,020000	;128KB
+	cmp	byte [rom64],1	;64KB flash ?
+	jnz	rom_set2
+	shr	ecx,1	;yes
+	add	esi,ecx
+	add	edi,ecx
+rom_set2:	call	getunreal
+	mov	ebx,edi	;^base
+	
+rom_set3:	mov	al,[esi]	;data byte
+	cmp	al,0ff
+	jz	rom_set5	;blank -> skip
+	
+	mov	byte [ebx+05555],0aa	;byte program command
+	mov	byte [ebx+02aaa],055
+	mov	byte [ebx+05555],0a0
+	mov	[edi],al
+	
+	mov	dx,1000	;time-out
+rom_set4:	cmp	[edi],al	;correct data ?
+	jz	rom_set5	;:yes
+	dec	dx
+	jnz	rom_set4
+	jmp	rom_open9	;program failure, bail
+	
+rom_set5:	inc	esi
+	inc	edi
+	dec	ecx
+	jnz	rom_set3	;:another
+	jmp	getreal
+	;
+	; compare flash [bufpt] -> [rombase], carry set if mismatch
+	;
+rom_cmp:	mov	esi,[bufpt]
+	mov	edi,rombase
+	mov	ecx,020000	;128KB
+	cmp	byte [rom64],1	;64KB flash ?
+	jnz	rom_cmp2
+	shr	ecx,1	;yes
+	add	esi,ecx
+	add	edi,ecx
+rom_cmp2:	call	getunreal
+	shr	ecx,2
+rom_cmp3:	mov	eax,[esi]
+	cmp	[edi],eax
+	jnz	rom_cmp4	;:failure
+	lea	esi,[esi+4]
+	lea	edi,[edi+4]
+	dec	ecx
+	jnz	rom_cmp3
+	call	getreal
+	clc
+	ret
+
+rom_cmp4:	call	getreal	;failure exit
+	stc
+	ret
+	;
+	; Wait BX milliseconds - depends on refresh rate !!!
+	;
+	; This is used for floppy delays and INT15 function 86.
+	;
+cs_waitbx: inc	bx
+	jmp	short cs_wbx8
+	
+cs_wbx1:	mov	cx,62	;62 refresh cycles per millisecond
+cs_wbx2:	in	al,port61
+	and	al,10h
+	mov	ah,al
+cs_wbx3:	in	al,port61	;wait for refresh bit to change state
+	and	al,10h
+	cmp	al,ah
+	jz	cs_wbx3
+          loop	cs_wbx2	;:another iteration
+cs_wbx8:	dec	bx	;another millisecond ?
+	jnz	cs_wbx1
+cs_wbx9:	ret
+	;
+	; stack
+	;
+	db	(($+100) and 0fff0h)-$ dup 0ffh	;allocate stack
+stack1:			;this is end, buffer follows...
+			;buffer is even 16

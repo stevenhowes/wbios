@@ -1,0 +1,1802 @@
+	;
+	; System specific code
+	;
+	; National SC1100 CPU
+	;
+	; (C)1997-2003 Pascal Dornier / PC Engines; All rights reserved.
+	;
+	; gx12 etc. -> page numbe in GX databook, rev. 1.1
+	; sc333 etc. -> page number in SC1100 databook, rev. 1.0
+	;
+
+	; pd 050417 add warm start delay
+	; pd 041011 fix PMR for WRAP.2 -> enable GPIO14	
+	; pd 040624 lower ROM size -> 128K to support Etherboot etc.
+	
+	;
+	; Platform specific register settings
+	;
+#if def	DRAMOPT
+SDCLKRATE	equ	5 * 4	;4x rate (66 MHz at 266 MHz core)
+#else
+SDCLKRATE2 equ	3 * 4	;3x rate (88.7MHz at 266 MHz core)
+SDCLKRATE	equ	2 * 4	;2.5x rate (106.4MHz at 266 MHz core)
+#endif
+			
+RFSHRATE	equ	3Fh * 256	;$3F * 64 / CPU clock = refresh interval
+
+	; define platform-specific settings here to avoid excessive ifdef's
+
+#if def	WRAP
+
+V_CCR2	equ	018	;CCR2 gx52
+			;DISABLE suspend pins, enable ISA
+			;bus write through, enable suspend
+			;on halt, unlock NW bit.
+			
+			;8400 sc12 gx114
+V8402	equ	0B680+SDCLKRATE	;8402 setting: drive strength
+
+			;8404 sc12 gx114
+V8404	equ	0320	;SDCLK0, SDCLK1 enabled, shift 2 core
+			;clocks, latch one core clock after
+			;rising edge of SDCLK, no FIFO
+			;bypass
+
+V905A	equ	03805	;905A Decode control 1 sc173
+			;905B Decode control 2 sc174
+			;positive decode for COM1, RTC,
+			;BIOS, IDE.
+
+#if def	WRAP2A
+V_PMR	equ	000F5051	;PMR pin multiplex register sc50
+			;GPIO40, disable FPCI monitor,
+			;disable AC97 clock out, IOCS1#,
+			;GPIO14, GPIO12, GPIO13, serial port,
+			;SERIRQ, LPC bus, GPIO0, GPIO17,
+			;GPIO20, PC_BEEP, INTC#, GPIO3,
+			;GPIO2.
+#else
+V_PMR	equ	002F5051	;PMR pin multiplex register sc50
+			;GPIO40, disable FPCI monitor,
+			;disable AC97 clock out, IOCS1#,
+			;GPIO15, GPIO12, GPIO13, serial port,
+			;SERIRQ, LPC bus, GPIO0, GPIO17,
+			;GPIO20, PC_BEEP, INTC#, GPIO3,
+			;GPIO2.
+#endif
+
+V_MCR	equ	00000000	;MCR misc config register sc53
+			;disable FPCI_MON, no zero wait state,
+			;8 bit wide IOCS#, DOCCS#, disable IRTX,
+			;8 bit wide ROM, SDBE0 = 0
+
+V_PPCR	equ	028	;PPCR PLL power control sc63
+			;enable external PCI clock,
+			;disable PLL3 = AC97 clock,
+			;enable PLL4, USB/SIO clock,
+			;must set bit 5
+	
+#if def	USB_EN
+V_IOCON1	equ	00d040000	;I/O control 1 sc250
+			;enable IR, SIO; SIO config at 002E,
+#else			;disable USB SMI, enable USB
+V_IOCON1	equ	00d000000	;I/O control 1 sc250
+			;enable IR, SIO; SIO config at 002E,
+#endif			;disable USB SMI, disable USB
+
+V_LPC00	equ	00EA	;SERIRQ_SRC serial IRQ source sc200
+			;IRQ 7,6,5,3,1 from LPC
+
+V_LPC10	equ	0	;LAD_EN LPC address enable sc204
+			;LPC addressing disable
+			
+V_LPC14	equ	0	;LAD_D0 LPC address decode 0 sc204
+			;default addresses
+
+#else
+
+V_CCR2	equ	098	;CCR2 gx52
+			;enable suspend pins, enable ISA
+			;bus write through, enable suspend
+			;on halt, unlock NW bit.
+			
+V8402	equ	0B680+SDCLKRATE	;8402 setting: drive strength
+
+V8404	equ	0020	;all clocks enabled, shift 2 core
+			;clocks, latch one core clock after
+			;rising edge of SDCLK, no FIFO
+			;bypass
+
+V905A	equ	0A94D	;905A Decode control 1 sc173
+			;905B Decode control 2 sc174
+			;positive decode for FDC, COM1, COM2,
+			;RTC, KBC alternate, BIOS, IDE, LPT1.
+			
+V_PMR	equ	02095155	;PMR pin multiplex register sc50
+			;GPIO40, disable FPCI monitor,
+			;enable AC97 clock out, IOCS1#,
+			;GPIO15, GPIO12, GPIO13, second IDE,
+			;SERIRQ, LPC bus, GPIO0, GPIO17,
+			;GPIO20, PC_BEEP, INTC#, GPIO3,
+			;GPIO2.
+
+V_MCR	equ	00000010	;MCR misc config register sc53
+			;disable FPCI_MON, no zero wait state,
+			;8 bit wide IOCS#, DOCCS#, enable IRTX,
+			;8 bit wide ROM, SDBE0 = 0
+
+V_PPCR	equ	020	;PPCR PLL power control sc63
+			;enable external PCI clock, PLL3,
+			;PLL4, USB/SIO clock, set reserved bit
+	
+V_IOCON1	equ	00d040000	;I/O control 1 sc250
+			;enable IR, SIO, USB; config at 002E,
+			;disable USB SMI
+
+V_LPC00	equ	011DA	;SERIRQ_SRC serial IRQ source sc200
+			;IRQ12,8,7,6,4,3,1 from LPC
+
+V_LPC10	equ	01F9B8	;LAD_EN LPC address enable sc204
+			;LPC RTC, KBC, wide generic, FDC,
+			;COM, LPT
+			
+V_LPC14	equ	00020	;LAD_D0 LPC address decode 0 sc204
+			;FDC @ 3F0, COM1 03F8, COM2 02F8
+
+#endif
+
+	;
+	; Equates
+	;
+cx_idx	equ	22h	;Cyrix index register
+cx_dat	equ	23h	;Cyrix data register
+gx_base	equ	4000h	;GX register base (don't change,
+			;this value is used in many places)
+GX_GDT:   		;enable special GDT entry (post.8)
+
+			;SDRAM clock rate
+			;(1) 2x (2) 2.5x (3) 3x (4) 3.5x
+			;(5) 4x (6) 4.5x (7) 5x
+SMIBASE	equ	0F000	;SMI base
+XBUSBASE	equ	0F200	;XBUS base
+GPIOBASE	equ	0F400	;GPIO base
+LPCBASE	equ	0F600	;LPC base
+CFGBASE	equ	09000	;Geode config base
+			;warning: aliased 8000..BFFF
+			;(see errata)
+ACPIBASE	equ	0FA00	;ACPI base
+IDEBASE	equ	0FC00	;IDE base
+
+	; all of these must be in the same 64K block
+
+HIGHBASE	equ	04001	;high memory base
+SMIBASE2	equ	02000	;SMI memory base L
+AUDBASE	equ	01000	;audio memory base L
+VIDBASE	equ	00000	;video / clock memory base L
+
+	; USB is separate
+
+HCIBASE_H	equ	0F000	;HCI USB base
+HCIBASE_L	equ	00000
+
+	; PCI defines
+	
+TOP_MEM	equ	02000	;memory size limit equ 512 MB
+	
+PCI:			;Undefine if not PCI based
+
+			;memory: 64K multiples
+P_MEM0	equ	08000	;start address, PCI memory space
+P_MEM9	equ	09000	;end address, PCI memory space
+P_ROM0	equ	09000	;temporary address for PCI ROM
+P_MEMP0	equ	0A000	;start address, PCI prefetchable space
+P_MEMP9	equ	0B000	;end address, PCI prefetchable space
+P_MEMINC	equ	00004	;minimum allocation
+P_MEMINC1	equ	00100	;mem allocation, primary bridge
+P_MEMINC2	equ	00040	;mem allocation, secondary bridge
+
+			;real mode: 16 byte multiples
+P_MEMR0	equ	0c800	;real mode memory start
+P_MEMR9	equ	0e000	;real mode memory limit
+P_MEMRINC	equ	00400	;real mode minimum allocation
+
+			;I/O:
+P_IO0	equ	01000	;start address, PCI I/O
+P_IOINC	equ	00040	;minimum allocation for I/O devices
+P_IOINC1	equ	04000	;I/O allocation, primary bridge
+P_IOINC2	equ	01000	;I/O allocation, secondary bridge
+P_IO9	equ	07FFF	;I/O limit = below chipset blocks
+
+P_LINSIZE	equ	008	;line size = 32 bytes
+P_PRILAT	equ	000	;primary latency timer
+P_SECLAT	equ	000	;bridge secondary latency timer
+
+P_BRIDGE	equ	00000111xb	;PCI bridge control register
+			;bit 0 = 1: enable parity check
+			;bit 1 = 1: forward serr# to primary
+			;bit 2 = 1: ISA mode for I/O registers
+			;bit 3 = 1: VGA enable
+			;bit 5 = 1: master abort mode
+			;bit 6 = 1: secondary bus reset
+			;bit 7 = 1: fast back to back enable
+			;           (set automatically)
+
+P_COMMAND	=	0100001111xb	;PCI device command register
+			;bit 0 = 1: enable I/O access
+			;bit 1 = 1: enable memory access
+			;bit 2 = 1: enable bus master access
+			;bit 3 = 1: enable special cycles
+			;bit 4 = 1: enable mem write / inval
+			;bit 5 = 1: enable VGA palette snoop
+			;bit 6 = 1: enable parity checking
+			;bit 7 = 1: enable AD stepping
+			;bit 8 = 1: enable SERR# driver
+			;bit 9 = 1: enable fast back to back
+	;
+	; First chipset init
+	;
+cs_clr:	
+	; initialize Geode configuration block
+
+	mov	dx,CFGBASE+03e	;CBA configuration base address sc54
+	in	ax,dx	;already set ?
+	cmp	ax,CFGBASE
+	jz	cs_clr0	;:yes
+	mov	ax,CFGBASE	;set base address
+	mov	dx,002ea	;one time use port
+	out	dx,ax
+
+cs_clr0:	mov	dx,CFGBASE+030	;PMR pin multiplex sc50
+	in	eax,dx
+	and	eax,00002c00	;"write as read"
+	or 	eax,V_PMR	;see at start
+	out	dx,eax
+
+	mov	dl,034h	;MCR misc config sc53
+	in	eax,dx
+	and	eax,00000002	;"write as read"
+	or	eax,V_MCR
+	out	dx,eax
+
+	mov	dl,012	;PPCR PLL power control sc63
+	in	al,dx
+	and	al,091	;"write as read"
+	or	al,V_PPCR	
+	out	dx,al	
+	
+	mov	dl,2	;WDTO, WDCNFG watchdog sc56
+	in	ax,dx
+	and	ax,0fe00	;"write as read"
+;	or	ax,00000	;disable
+	out	dx,ax
+	
+	mov	dl,0c	;TMSTS, TMCNFG timer sc58
+	mov	ax,0001	;clear timer status, enable 27 MHz,
+	out 	dx,ax	;microsecond timer, HRT int disable
+
+	; other registers:
+	;
+	; 04		;WDSTS watchdog status sc57
+	; 08		;TMVALUE hires timer sc58 RO
+	; 10		;MCCM max core mult. sc63 RO
+	; 18 ??? 7601d004	;PLL3C PLL3 config sc63
+	; 1E 0204 fast PCI, 266 MHz	;CCFC core clock control sc64
+	; 38		;INTSEL interrupt select sc54
+
+	; delay a bit if this is a warm start           pd 050417
+	;
+	; the intention of this is to give the CF card time to write back
+	; data before we do a IDE and PCI reset
+	
+	mov	dx,CFGBASE+4	;watchdog status sc57
+	in	al,dx
+	test	al,8	;asserted ?
+	jnz	cs_clrw	;-> delay
+	
+	mov	eax,08000905ch	;905C PCI interrupt map
+	mov	dx,pci_ad
+	out	dx,eax
+	mov	dl,low(pci_dat)
+	in	ax,dx
+	and	ax,ax	;if not zero, it was a BIOS reboot
+	jnz	cs_clrw	;-> delay
+	
+	mov 	ax,09044h	;9044 reset control sc170
+	mov	dl,low(pci_ad)
+	out	dx,eax
+	mov	dl,low(pci_dat)
+	in	al,dx
+	test	al,01
+	jnz	cs_clrw2	;bit 0 set = cold start	-> skip delay
+	
+cs_clrw:	mov	cx,50000	;warm start -> wait a bit...
+cs_clrw1:	out	iowait,ax
+	dec	cx
+	jnz	cs_clrw1
+cs_clrw2:
+
+	; init PCI mapped chipset registers
+
+	mov 	eax,80000000h	;PCI configuration space
+	mov	si,offset gxtab0
+cs_clr1:	cmp	si,offset gxtab0w
+	jnz	cs_clr1b
+
+	; add some reset delay - PCI reset must be 1 ms+
+
+	mov	cx,200
+cs_clr1a:	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	loop	cs_clr1a
+
+cs_clr1b:	cs:	lodsw	;register index
+	xchg 	eax,ebx
+	cs: 	lodsd	;data
+	xchg 	eax,ebx
+	mov	dx,pci_ad
+	out 	dx,eax	;write index
+	mov	dl,low(pci_dat)
+	xchg 	eax,ebx
+	out 	dx,eax	;write data
+	xchg 	eax,ebx
+	cmp	si,offset gxtab0e	;end of table ?
+	jb	cs_clr1
+
+	; enable SIO
+
+	mov	dx,XBUSBASE+0	;I/O control 1 sc250
+	in 	eax,dx
+	and 	eax,0f0001ffff	;reserved bits
+	or 	eax,V_IOCON1
+
+			;USB enable if configured
+	cmp	byte [cs:CFG_OFS+cfg_usb],0
+	jz	cs_clr2	;USB disable
+	or	eax,040000	;enable USB
+cs_clr2:	out	dx,eax	;(if USB_EN is set, USB is always
+			;enabled)
+
+	; initialize I/O mapped registers
+	
+	mov	dx,LPCBASE+010	;LAD_EN LPC address enable sc204
+	in	eax,dx
+	and	eax,08000	;keep LPC flash enable bit !
+	or	eax,V_LPC10
+	out	dx,eax
+	
+	mov 	si,offset gxtab10
+cs_clr3:	cs:	lodsw	;get index word
+	mov	dx,ax
+	cs:	lodsd	;get data word
+	out 	dx,eax	;write to port
+	cmp	si,offset gxtab10e	;end of table ?
+	jb	cs_clr3	;:no
+
+	jmp	sio_init0	;do early super I/O initialization
+	;
+	; initialize chipset
+	;
+	; set all registers, detect memory size
+	; keep L2 cache disabled at this point
+	; set CPU specific registers if required
+	;
+cs_init:	mov	ax,cs	;DS = CS
+	mov	ds,ax
+	;
+	; Enter unreal (4GB segment) mode -> change ES, GS selector
+	;
+	; This selector is not touched by other code, and should stay
+	; valid until we get ready to boot.
+	;
+	cli		;disable interrupts
+	lgdt 	word [gdt]	;load GDT (in data module, writeable)
+	
+	mov	eax,cr0
+	or	al,1	;enable protected mode
+	mov	cr0,eax
+	jmp	short loadgs	;flush queue
+loadgs:	mov	bx,8	;selector for 4 GB
+	mov	es,bx
+	mov	bx,10h	;selector for GX_BASE
+	mov	gs,bx	;mov gs,bx
+	and	al,0fe	;exit protected mode
+	mov	cr0,eax	;mov cr0,eax
+	;
+	; load CPU configuration registers (port 22 / 23)
+	;	
+	mov	si,offset gxtab1	;CPU configuration registers
+cs_ini01:	lodsw		;get index / data from table
+	out	cx_idx,al
+	mov	al,ah
+	out	cx_dat,al
+	cmp	si,offset gxtab1e	;end of table ?
+	jb	cs_ini01
+	;
+	; disable CPU cache
+	;
+	mov	eax,cr0
+	or 	eax,040000000h	;set CD bit = disable cache
+	and 	eax,0dfffffffh	;clear NW bit -> write through
+	mov	cr0,eax
+	invd
+	;
+	; is shadow on ? if yes, don't overwrite shadow / DRAM config
+	; registers
+	;
+	mov	si,offset gxtab2	;initialize from scratch
+	mov	di,[gs:800eh]	;BC_XMAP_3 gx105
+	and	di,di	;shadow on ?
+	jz	cs_ini03	;:no
+	mov	si,offset gxtab3	;skip shadow / DRAM registers
+	;
+	; initialize GX registers, accessed through GS: segment
+	; (points to GX_BASE).
+	;
+cs_ini03:	mov	bx,[si]	;get index
+	mov 	eax,[si+2]	;get data
+	add	si,6
+	
+	; option for conservative DRAM timing
+	
+#if def	cfg_dram
+	cmp	bx,08400	;DRAM timing config ?
+	jnz	cs_ini03b
+	test	byte [cs:CFG_OFS+cfg_dram],0ff
+	jz	cs_ini03b
+	and	eax,0ffe3ffff	;clear bits 20:18
+	or	eax,SDCLKRATE2 * 65536
+cs_ini03b:
+#endif
+	mov 	[gs:bx],eax	;write register
+	cmp	si,offset gxtab3e	;end of table ?
+	jb	cs_ini03
+	;
+	; initialize GX registers, accessed through CPU_WRITE instruction
+	; no longer supported on SC1100 ?
+	;
+;cs_ini04:	mov	si,offset gxtab4
+;cs_ini05:	mov 	ebx,0ffffffffh
+;	mov	bx,[si]	;index
+;	mov 	eax,[si+2]	;get data
+;	add	si,6
+;	db	00f,03c	;cpu_write	;write register
+;	cmp	si,offset gxtab4e
+;	jb	cs_ini05
+	;
+	; initialize PCI config registers
+	;
+	mov 	eax,080000000h	;PCI configuration space
+	mov	si,offset gxtab6
+cs_ini09:	lodsw		;register index
+	xchg 	eax,ebx
+	lodsd		;data
+	xchg 	eax,ebx
+	mov	dx,pci_ad
+	out 	dx,eax	;write index
+	mov	dl,low(pci_dat)
+	xchg 	eax,ebx
+	out 	dx,eax	;write data
+	xchg 	eax,ebx
+	cmp	si,offset gxtab6e	;end of table ?
+	jb	cs_ini09
+	;
+	; initialize 5540 memory mapped registers
+	;
+	mov 	edi,HIGHBASE shl 16	;point to HIGHBASE
+	mov	si,offset gxtab9
+cs_inic1:	cs:	lodsw	;get index
+	mov	di,ax
+	lodsd		;get data
+	a4 	stosd	;write register
+	cmp	si,offset gxtab9e	;end of table ?
+	jb	cs_inic1
+	;
+	; initialize GPIO pin map
+	;
+	mov 	si,offset gxtab11
+	xor 	eax,eax
+	xor	bx,bx	;clear index
+cs_ini16:	mov	al,bl	;get index
+	mov	dx,GPIOBASE+20h	;GPIO pin config select sc198
+	out 	dx,eax
+	lodsb
+	mov	dl,24h	;GPIO pin config access sc198
+	out 	dx,eax
+	inc	bx	;next index
+	cmp	bx,64	;end ?
+	jb	cs_ini16
+
+#if def	WRAP
+	
+	; to allow access to ACPI registers, we need to give PWRBTN#
+	; a kick
+	
+	mov	dx,GPIOBASE+10h	;GPIO data out 1 sc197
+	in	eax,dx
+	and	eax,0ffff7fff	;clear G47 = PWRBTN#
+	out	dx,eax
+
+	; waste 20+ ms for PWRBTN# debounce
+	
+	mov	cx,2000
+cs_iniwr:	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	out	iowait,ax
+	loop	cs_iniwr	
+	
+	; now release PWRBTN#
+	
+	or	ax,08000	;set G47 = PWRBTN#
+	out	dx,eax
+#endif
+	;
+	; initialize 8/16/32 bit GPIO registers
+	;
+	mov	si,offset gxtab12
+cs_ini17:	cmp	si,offset gxtab12e	;end ?
+	jae	cs_ini18
+	mov	cl,[si+0]	;length code
+	mov	dx,[si+1]	;register address
+	mov 	eax,[si+3]	;data
+	dec	cl	;length ?
+	js	cs_ini17b	;0 :byte
+	jnz	cs_ini17l	;2 :long word
+	out	dx,ax	;1 :word
+	add	si,5
+	jmp	cs_ini17
+
+cs_ini17b: out	dx,al	;byte
+	add	si,5
+	jmp	cs_ini17
+	
+cs_ini17l: out 	dx,eax	;long word
+	add	si,7
+	jmp	cs_ini17
+cs_ini18:
+	;
+	; return carry set if we had shadow on before
+	;
+cs_ini90:	mov	di,[gs:800eh]	;BC_XMAP_3 gx105
+	cmp	di,0
+	jz	cs_ini91
+	stc		;shadow was on, set carry
+	ret
+	
+cs_ini91:	clc		;shadow was off - clear carry
+	ret
+	;
+	; CPU specific settings
+	;
+cs_cpu:	
+
+#if def	GX_PAD
+
+	; Initialize scratch pad - need to set the tag
+	
+	; Scratch pad doesn't make that much sense on SC1100 unless
+	; you have some small, super time critical real-time task...
+	; This has been tested on earlier CPUs, but not on SC1100.
+
+	mov 	eax,GX_BASE shl 16	;point L1 tag to start of GX space
+	db	00f,026,11100000xb	;mov tr4,eax
+
+	mov 	eax,0401h	;start address + 1
+cs_pad:	db	00f,026,11101000xb	;mov tr5,eax
+	add	ax,0010h	;next cache line
+	cmp	ax,1000h
+	jb	cs_pad	;:another line
+	
+	; now enable the scratch pad, this locks down the tag
+
+	mov	al,0B8h	;GCR Graphics control register gx97
+	out	cx_idx,al
+	mov	al,5	;enable scratch pad = 2KB
+	out	cx_dat,al	;(SC1100 doesn't support 3KB or 4KB !)
+#endif
+
+	invd		;flush cache
+	mov	eax,cr0
+	and 	eax,09fffffffh	;clear CD -> enable cache
+	or 	eax,20000000h	;set NW bit -> write back enable
+	mov	cr0,eax
+	jmp	short cs_cpu1
+
+cs_cpu1:	invd
+	
+	mov	al,0c2h	;set LOCK_NW to lock state of NW bit
+	out	cx_idx,al
+	xchg	ax,bx
+	in	al,cx_dat
+	xchg	ax,bx
+	out	cx_idx,al
+	xchg	ax,bx
+	or	al,4
+	out	cx_idx,al
+	
+#if def	DRAMOPT
+	jmp	sdramopt	;optimize SDRAM timing
+#else
+	ret
+#endif
+	;
+	; Detect memory
+	;
+	; EAX = test pattern (most of the time)
+	; EBX = inverted test pattern
+	; CL  = bank (16,0), used as shift for values
+	; EDX = DRAM configuration all banks (shifted left)
+	; EBP = total memory size
+	; SP = return pointer
+	; DS = 0 (real mode)
+	; ES = 0 (unreal mode)
+	;
+	; Cache must be off ! 8KB, 16KB page sizes are not shown in Cyrix'
+	; address map (m129), and not supported.
+	;
+cs_det:	mov	cl,16	;start with DIMM1
+	xor	ax,ax	;clear DS
+	mov	ds,ax
+	xor 	ebp,ebp	;clear total memory size
+	
+	; set bank for maximum size, bank count etc.
+	
+cs_det1:	shl 	edx,16	;push up previous configuration
+	mov 	eax,00705720h	;set 2 DIMM banks, 4 component banks,
+			;4KB page size, 512MB DIMM size
+	rol 	eax,cl	;swap DIMMs if necessary
+	mov 	[gs:8408h],eax	;set memory type gx114
+	in	ax,iowait	;force delay
+	
+	; test address 0 -> bank presence
+	
+	xor 	edi,edi	;test words at 0	
+	mov 	eax,033cc55aa	;test pattern
+	stosd
+	not 	eax	;invert bus
+	stosd
+	stosd
+	mov 	ebx,eax	;inverted pattern for later
+	not 	eax	;did this location work ?
+	cmp 	eax,[0]
+	jz	cs_det1a
+cs_det1x:	mov	dx,0070h	;no memory
+	jmp	cs_det8
+cs_det1a:
+	mov	dl,0	;ok, set 1KB page size
+	
+	; test A13 - 2 or 4 component banks ?
+	
+	mov 	[2000h],ebx
+	cmp 	eax,[0]	;overwrite ?
+	jnz	cs_det2	;:yes
+	or	dh,10h	;4 component banks
+cs_det2:	mov 	[0],eax	;restore reference pattern
+
+	; test A14 - 1 or 2 module banks ?
+	
+	mov 	[4000h],ebx	;write pattern
+	mov 	[4008h],eax
+	cmp 	[4000h],ebx
+	jnz	cs_det3	;:bad
+	or	dh,40h	;2 component banks
+cs_det3:
+	; test A10 - 1KB page size ?
+	
+	mov 	[0400h],ebx
+	cmp 	eax,[0]	;overwrite ?
+	jnz	cs_det4	;:yes
+	add	dl,10h	;increase page size
+
+	; test A11 - 2KB page size
+	
+	mov 	[0800h],ebx
+	cmp 	eax,[0]	;overwrite ?
+	jnz	cs_det4	;:yes
+	add	dl,10h	;increase page size
+cs_det4:
+	; set bank parameters
+	
+	mov 	eax,00700700h	;other bank disabled
+	or	ax,dx	;get bank parameters, or with 512MB size
+	rol 	eax,cl	;swap DIMMs if necessary
+	mov 	[gs:8408h],eax	;set memory type gx114
+	in	ax,iowait	;force delay
+
+	; detect DIMM size
+	
+	mov	ch,7	;7 iterations
+	mov 	edi,00400000h	;start with 4MB
+	mov 	eax,ebx	;restore test pattern
+	not 	eax
+	mov 	[0],eax
+cs_det5:	mov 	[es:edi],ebx	;write at [size]
+	cmp 	eax,[0]	;did [0] get clobbered ?
+	jnz	cs_det6	;yes: we reached DRAM size
+	inc	dh	;increase RAM size count
+	shl 	edi,1	;next RAM size
+	dec	ch
+	jnz	cs_det5
+cs_det6:	add 	ebp,edi	;sum up RAM size
+	
+	; another bank ?
+	
+cs_det8:	xor	cl,16
+	jnz	cs_det9
+	jmp	cs_det1	;:yes
+	
+	; set final value
+	
+cs_det9:	mov 	[gs:8408h],edx	;set memory type gx114
+	dec	ebp	;low bits = 1
+	mov 	[gs:8000h],ebp	;BC_DRAM_TOP gx104
+	ret
+	;
+	; Copy BIOS to shadow RAM (skip if already enabled)
+	;
+	; Note: For fastest startup, this happens before DRAM test and
+	; BIOS checksum test. If DRAM or BIOS is bad, we might crash.
+	;
+cs_shad:	cmp	word [gs:800eh],0	;is shadow on ?
+	jnz	cs_shad9	;yes: don't touch
+	mov 	dword [gs:800ch],22222222h	;write only mode gx105
+	;
+	; flush cache the hard way (through test registers)
+	;
+	xor	cx,cx	;line, set number
+cs_shad01: mov 	eax,0f0000000h	;clear tag
+	mov	ax,cx	;bits 15..14 = line
+	shl	ax,14
+	db	00f,026,11100000xb	;mov tr4,eax
+	mov	ax,cx	;line, set
+	shl	ax,2
+	or	al,1	;cache write
+	db	00f,026,11101000xb	;mov tr5,eax
+	inc	cx
+	cmp	cx,0400
+	jnz	cs_shad01
+	;
+	; copy BIOS to shadow RAM
+	;
+	mov	ax,0e000h	;E000 segment
+	mov	ds,ax
+	mov	es,ax
+	xor	si,si
+	xor	di,di
+	mov	cx,4000h	;copy
+	rep 	movsd
+	mov	ax,cs	;F000 segment
+	mov	ds,ax
+	mov	es,ax
+	mov	cx,4000h
+	rep 	movsd	;rep movsd
+	wbinvd		;flush cache (just in case)
+	in	ax,iowait	;stall to make sure all is written back
+#if def	SMI
+	mov 	dword [gs:800ch],0ddd7ddddh	;enable read only / cache gx105
+			;SMI: F000-F3FF read/write
+#else
+	mov 	dword [gs:800ch],0ddddddddh	;enable read only / cache gx105
+#endif
+cs_shad9:	ret
+	;
+	; Copy ISA video BIOS to shadow RAM
+	;
+cs_vshad:	push	ds
+	push	es
+
+	mov	ax,0c000h	;video BIOS segment
+	mov	es,ax
+#if def	VBIOSSRC	;if we have video BIOS in "weird" place
+	mov	ax,VBIOSSRC
+#endif
+	mov	ds,ax
+	cmp	word [0],0aa55h	;video BIOS signature ?
+	jnz	cs_vshad1	;no: no video BIOS on ISA bus, bail
+	
+	mov 	ebx,[gs:8008h]	;get shadow register
+	or	bl,bl	;video shadow on ?
+	jnz	cs_vshad1	;yes: don't touch
+	mov	bl,22h	;set write only mode for C000-C7FF
+	mov 	[gs:8008h],ebx
+
+	xor	di,di	;copy BIOS to shadow RAM
+	xor	si,si
+	mov	cx,8000h/4
+	rep 	movsd
+
+	wbinvd
+	in	ax,iowait	;stall to make sure all is written back
+
+	mov	bl,0ddh	;set read only mode
+	mov 	[gs:8008h],ebx
+
+cs_vshad1: pop	es
+	pop	ds
+	ret
+	;
+	; Copy video BIOS from PCI ROM to shadow RAM
+	; DS:ESI = unreal mode pointer to BIOS
+	; ES     = destroyed
+	;
+cs_vshad2: push	es
+	pushad
+	
+	mov 	ebx,[gs:8008h]	;get shadow register
+	or	bl,bl	;video shadow on ?
+	jnz	cs_vshad9	;yes: don't touch
+	mov	bl,22h	;set write only mode for C000-C7FF
+	mov 	[gs:8008h],ebx
+
+	mov	ax,0c000h	;copy video BIOS from PCI ROM
+	mov	es,ax	;to shadow
+	xor	edi,edi
+	mov	ecx,8000h/4
+	a4	rep movsd
+	
+	wbinvd		;flush cache (just in case)
+	in	ax,iowait	;stall to make sure all is written back
+
+	mov	bl,0ddh	;set read only mode
+	mov 	[gs:8008h],ebx
+	popad
+	pop	es
+cs_vshad9: ret
+	;
+	; set speed-sensitive chipset registers
+	;
+cs_spd:	ret
+	;
+	; Set read/write shadow
+	;
+	; The BIOS is written to for HDD parameters.
+	;
+cs_shadrw: mov 	dword [gs:800ch],0ffffffffh	;set shadow status gx105 -> read,
+	ret		;write, cacheable
+	;
+	; set read only shadow
+	;
+cs_shadro:
+#if def	SMI
+	mov 	dword [gs:800ch],0ddd7ddddh	;set shadow status gx105 -> read,
+			;cacheable. SMI: F000-F3FF read/write
+#else
+	mov 	dword [gs:800ch],0ddddddddh	;set shadow status gx105 -> read,
+			;cacheable.
+#endif
+	ret
+	;
+	; enable A20 gate (note this is really controlled by register inside
+	; GXM)
+	;
+cs_a20on:	mov	al,26h	;enable A20 gate
+	out	port92,al
+	ret
+	;
+	; Wait BX milliseconds - depends on refresh rate !!!
+	;
+	; This is used for floppy delays and INT15 function 86.
+	;
+cs_waitbx: inc	bx
+	jmp	short cs_wbx8
+	
+cs_wbx1:	mov	cx,62	;62 refresh cycles per millisecond
+cs_wbx2:	in	al,port61
+	and	al,10h
+	mov	ah,al
+cs_wbx3:	in	al,port61	;wait for refresh bit to change state
+	and	al,10h
+	cmp	al,ah
+	jz	cs_wbx3
+          loop	cs_wbx2	;:another iteration
+cs_wbx8:	dec	bx	;another millisecond ?
+	jnz	cs_wbx1
+cs_wbx9:	ret
+	;
+	; Test and enable numeric coprocessor
+	;
+cs_npx:	fninit		;initialize x87
+	fstcw	[tmp_npx]	;store status
+	cmp	word [tmp_npx],037fh	;present
+	jnz	cs_npx7	;:no
+	
+	in	al,pic1+1	;enable interrupt
+	and	al,11011111xb
+	out	pic1+1,al
+	or	byte [m_devflg],2	;set device flag
+	
+	mov	eax,cr0
+	and	al,11011011xb	;clear EM, NE bits
+	or	al,00000010xb	;set MP bit
+	mov	cr0,eax
+	ret
+	
+cs_npx7:	mov	eax,cr0
+	or	al,00100100xb	;set EM, NE bits
+	and	al,11111101xb	;clear MP bit
+	mov	cr0,eax
+	ret
+	;
+	; configure PCI interrupts [eax]
+	; 0..7 = INTA, 8..15 = INTB, 16..23 = INTC, 24..31 = INTD
+	;
+cs_pciint: mov	ch,4	;4 interrupts
+	xor	bx,bx	;interrupt map
+	xor	dx,dx	;interrupt bitmap
+cs_pcii1:	rol 	eax,8	;start with INTD	
+	cmp	al,0ffh	;unavailable
+	jnz	cs_pcii2
+	mov	al,0	;0 = disable
+cs_pcii2:	shl	bx,4
+	or	bl,al	;include in BX
+	mov	si,1	;set corresponding bit in DX
+	mov	cl,al
+	shl	si,cl
+	or	dx,si
+	dec	ch	;another interrupt ?
+	jnz	cs_pcii1	;:yes
+	
+	xchg	ax,dx	;DX -> AX (interrupt bitmap)
+	and	al,0feh	;clear bit 0
+	mov	dx,picedge0
+	out	dx,ax	;set edge/level mode (& picedge1)
+	
+	xchg	ax,bx	;BX -> AX
+	mov 	ebx,08000905c	;5C / 5D PCI interrupt map sc174
+	jmp	pci_setw
+
+	;
+	; 5530 registers, access through PCI configuration space
+	;	
+gxtab0:	dw	09014,LPCBASE+1	;9014 F0BAR1 LPC base sc168
+	dw	00000
+	dw	09010,GPIOBASE+1	;9010 F0BAR0 GPIO base sc168
+	dw	00000
+
+	dw	09044,0008e	;&&&	;9044 Reset control sc170
+	dw	006EE	;9046 PCI functions enable sc171
+			;-> reset AC97, IDE
+gxtab0w:	dw	09044,00000	;9044 Reset control sc170
+	dw	006EE	;9046 PCI functions enable sc171
+			;9047 Misc enable sc171
+			;enable LPC, GPIO
+
+	dw	09058,00000
+	dw	V905A	;905A Decode control 1 sc173
+			;905B Decode control 2 sc174
+
+;	dw	09000,0100B	;9000 Vendor ID sc166 RO
+;	dw	00510	;9002 Device ID sc166 RO
+	dw	09004,0000F	;9004 PCI command sc166
+	dw	00280	;9006 PCI status sc167
+;	dw	09008,00000	;9008 Revision sc167 RO
+;			;9009 Class code sc167 RO
+;	dw	00601
+
+	dw	09540,0FFC1	;9540 F5BAR0 mask sc247
+	dw	0FFFF	;64 bytes
+	dw	09544,0FFC0	;9544 F5BAR1 mask sc248
+	dw	0FFFF	;64 bytes
+	dw	09548,0FFC0	;9548 F5BAR2 mask sc248
+	dw	0FFFF	;64 bytes
+	dw	0954C,0FFC0	;954C F5BAR3 mask sc248
+	dw	0FFFF	;64 bytes
+	dw	09550,0FFC0	;9550 F5BAR4 mask sc248
+	dw	0FFFF	;64 bytes
+	dw	09554,0FFC0	;9554 F5BAR5 mask sc248
+	dw	0FFFF	;64 bytes
+;	dw	09558,00000,0	;9558 F4BAR/F5BAR target sc249
+;	dw	09560,0,0	;9560 BIOS scratch sc249
+	dw	09564,CFGBASE,0	;9564 BIOS scratch sc249
+	
+	dw	09510,XBUSBASE+1,0	;9510 F5BAR0 X-Bus 0 sc246
+;	dw	09514,0,0	;9514 F5BAR1 reserved sc246
+;	dw	09518,0,0	;9518 F5BAR2 reserved sc246
+;	dw	0951C,0,0	;951C F5BAR3 reserved sc246
+;	dw	09520,0,0	;9520 F5BAR4CS sc247
+;	dw	09524,0,0	;9520 F5BAR5CS sc247
+
+;	dw	09500,0100B	;9500 Vendor ID sc246 RO
+;	dw	00515	;9502 Device ID sc246 RO
+	dw	09504,00003	;9504 PCI command sc246
+	dw	00280	;9506 PCI status sc246 RO
+;	dw	09508,00000	;9508 Revision sc246 RO
+;			;9509 Class code sc246 RO
+;	dw	00680
+;	dw	0950C,00000	;950C Cache line size sc246 RO
+;			;950D PCI latency timer sc246 RO
+;	w	00000	;950E PCI header type sc246 RO
+;			;950F PCI BIST sc246 RO
+
+	dw	0900C,04000;0008	;900C Cache line size sc168
+			;900D PCI latency timer sc168
+	dw	00080	;900E Header type sc168 RO
+			;900F PCI BIST sc192 RO
+
+;	dw	0902C,0100B	;902C Subsystem vendor ID sc168 RO
+;	dw	00500	;902E Subsystem device ID sc168 RO
+
+	dw	09040,00019	;9040 PCI function control 1 sc169
+			;disable PERR/SERR,
+			;enable PCI interrupt acknowledge
+			;9041 PCI function control 2 sc169
+			;disable config traps
+	dw	00000	;9042 reserved sc169
+			;9043 PIT delayed transactions sc170
+			;immediate transactions
+			;set 0200 for benchmark / diagnostic
+			;compatibility, 0000 for performance.
+
+	dw	09110,SMIBASE+1	;9110 F1BAR0 SMI base sc207
+	dw	00000
+	dw	09140,ACPIBASE+1	;9140 F1BAR1 ACPI base sc207
+	dw	00000
+
+	dw	09220,IDEBASE+1	;9220 F2BAR4 IDE base sc225
+	dw	00000
+
+	dw	09310,AUDBASE	;9310 F3BAR0 audio base sc231
+	dw	HIGHBASE
+
+	dw	09810,HCIBASE_L	;9810 HCI base address sc252
+	dw	HCIBASE_H
+gxtab0e:			;end of table
+	;
+	; GX CPU configuration registers, accessed through cx_idx / cx_dat
+	;
+gxtab1:	db	0C1,000	;CCR1 gx52
+			;disable SMI
+	db	0C3,014	;CCR3 gx52
+			;this must be set first to allow
+			;access to other config registers.
+			;enable config registers; serialize
+			;PCI memory space.
+			;04 reserved bit, set per GXMREG.ASM
+	db	020,020	;PCR Performance control gx53
+			;disable VGA SMI
+	db	0B8,001	;GCR Graphics control register gx97
+			;no scratch pad, GX_BASE 04000
+	db	0C2,V_CCR2	;CCR2 gx52
+	db	0E8,0B8	;0F8	;CCR4 gx53
+			;enable CPUID, DISable nested SMI,
+			;enable directory table entry cache,
+			;enable memory read bypassing,
+			;no I/O recovery time, fast FPU mode
+	db	0C3,0F8	;CCR3 gx52
+			;enable config registers; serialize
+			;PCI memory space. SMM not locked.
+
+			;NOTE: this will clobber SMM header
+			;address (below) - side effect of
+			;write
+	db	0CD,000	;040	;SMM address MSB 0 gx54
+	db	0CE,00f	;040	;SMM address 1 gx54
+#if def	SMI
+	db	0CF,003	;size: 16KB
+#else
+	db	0CF,000	;006 ;SMM address LSB, size 2 gx54
+			;disable SMI (normal: 06)
+#endif
+			
+	db	0B0,000	;SMM header address LSB 0 gx53
+	db	0B1,040	;000	;SMM header address 1 gx53
+	db	0B2,00f	;041	;SMM header address 2 gx53
+	db	0B3,000	;040	;SMM header address MSB 3 gx53
+
+	db	0B9,000	;VGA control register gx164
+			;SMI disabled
+	db	0BA,000	;VGA mask register 0 gx164
+	db	0BB,000	;VGA mask register 1 gx164
+	db	0BC,000	;VGA mask register 2 gx164
+	db	0BD,000	;VGA mask register 3 gx164
+			;SMI disabled
+
+	db	0EB,001	;CCR7 Configuration control 7 gx53
+			;no NMI, enable extended MMX
+	db	0F0,003	;PCR1 performance control 1 gx55
+			;enable incrementor, 1X clock
+;	db	0FE,0B0	;Device ID 0 gx54
+			;SC1200 device ID, core multiplier
+;	db	0FF,081	;Device ID 1 gx54
+			;revision number
+gxtab1e:			;end of table
+	;
+	; GX CPU configuration registers, accessed through GX_BASE + index
+	;
+gxtab2:	dw	08300,04758,00000	;DC unlock m157 -> unlocked gx144
+	dw	08304,00000,00000	;DC general config gx144
+
+	dw	08000,0FFFF,01FFF	;BC_DRAM_TOP 512MB - 1 gx104
+	dw	08004,00060,00000	;BC_XMAP_1 memory xbus map gx104
+			;no VGA / shadow, A20 enable
+	dw	08008,00000,00000	;BC_XMAP_2 C0..DF map gx105
+	dw	0800C,00000,00000	;BC_XMAP_3 E0..FF map gx105
+
+	dw	08404,V8404,00000	;MC_MEM_CNTRL2 mem config 2 gx114 sc12
+			;(set before 8400 for proper SDCLK
+			;init protocol)
+	dw	08400,RFSHRATE+00C	;MC config 1 gx113
+	dw	V8402	;disable SDRAM clock
+	dw	08400,RFSHRATE+00C	;MC config 1 gx113
+	dw	V8402+2	;start SDRAM clock
+
+#if def	DRAMOPT		;DRAM optimization: start at PC66 timing
+	dw	0840C,03125,03753
+#else			;else, use aggressive PC133 timing
+	dw	0840C,03125,02643	;MC_SYNC_TIM1 DRAM timing gx115
+#endif
+;	dw	0840C,03115,03753	;(earlier value)
+;	dw	0840C,02110,03542	;(GXM value)
+			;CAS latency 3 clk,
+			;REF->REF/ACT tRC 7 clk,
+			;ACT->PRE tRAS 5 clk,
+			;PRE->ACT tRP 3 clk,
+			;ACT->R/W tRCD 3 clk,
+			;ACT0<->ACT1 tRRD 1 clk,
+			;Data in -> PRE tDPL 2 clk
+	dw	08400,RFSHRATE+00D	;MC_MEM_CNTRL1 gx113 - pulse MRS
+	dw	V8402+2
+	dw	08400,RFSHRATE+00C	;MC_MEM_CNTRL1 mem config 1 gx113
+	dw	V8402+2	;SDRAM clock / 3.5 (76 MHz),
+			;enable SDRAM clock, refresh rate 3F,
+			;refresh not staggered, enable SMM map
+	dw	08408,01310,00070	;MC_BANK_CFG bank address gx114
+			;DIMM1 1 module bank, 2 component banks,
+			;4MB size, not installed
+			;DIMM0 1 module bank, 4 component banks,
+			;32MB size, 2KB bank size
+
+;	dw	08418,003FF,00000	;MC_DR_ADD Dirty RAM address gx116
+;	dw	0841C,003FC,00000	;MC_DR_ACC Dirty RAM access gx116
+      	;
+      	; these registers can be reprogrammed without blowing up shadow
+      	; BIOS
+      	;
+gxtab3:	dw	08414,007ff,00000	;Graphics memory base gx116
+
+;	dw	08100,00280,00050	;X,Y coordinate gx130
+;	dw	08104,00008,00010	;Width, height / vector length, error gx130
+;	dw	08108,00000,00000	;BLT X, Y source / axial, diag error gx130
+;	dw	0810C,00000,00707	;GP source color 0,1 gx131
+;	dw	08110,0FFFF,0FFFF	;GP pattern color 0,1 gx131
+;	dw	08114,0FFFF,0FFFF	;GP pattern color 2,3 gx131
+;	dw	08120,0FFFF,0FFFF	;GP pattern data 0 gx131
+;	dw	08124,0FFFF,0FFFF	;GP pattern data 1 gx131
+;	dw	08128,0FFFF,0FFFF	;GP pattern data 2 gx131
+;	dw	0812C,0FFFF,0FFFF	;GP pattern data 3 gx131
+;	dw	08140,000FF,00300	;VGA write 4-15 gx166
+;	dw	08144,09E00,00000	;VGA read 4-16 gx166
+
+;	dw	08200,000CC,000CC	;GP raster mode gx132
+;	dw	08204,00280,00280	;GP vector mode gx132
+;	dw	08208,002C3,002C3	;GP BLT mode gx132
+;	dw	0820C,00000,00000	;GP BLT status gx133
+			;screen width 1024, 8bpp
+;	dw	08210,00000,00000	;VGA base address gx166
+;	dw	08214,00000,00000	;VGA latch 4-14 gx166
+
+
+;;	dw	08300,04758,00000	;DC unlock m157 -> unlocked gx144
+;;	dw	08304,07640,00000	;DC general config gx144
+;;	dw	08304,06540,00000	;DC general config gx144
+			;FIFO end level 7, start 6,
+			;DCLK 2x, compression disable,
+			;cursor disable, FIFO disabled
+;;	dw	08308,0000F,00000	;DC timing gx145
+			;no pixel double, no interlace,
+			;not VGA planar, not FP center,
+			;VSYNC active high, HSYNC active high,
+			;blink disable, vertical interrupt
+			;enable, timing generator disable
+			;(will init later), blank enable,
+			;HSYNC enable, VSYNC enable, FP
+			;power enable
+			
+			;Note: with 5520, sync polarity must
+			;be controlled in the 5520 registers -
+			;always set active high in GXM.
+
+;;	dw	0830C,03005,00000	;DC output config gx147
+			;high & low panel data enabled,
+			;PCLK enabled, 8 bpp mode
+;;	dw	08310,00000,00000	;DC frame buffer start gx148
+;;	dw	08314,00280,00000	;DC comp buffer start gx148
+			;this is within the line for modes
+			;<> 1024 bytes per line, after the
+			;frame buffer for 1024 column mode.
+;;	dw	08318,0FE00,00026	;DC cursor buffer start gx148
+;;	dw	08320,00000,00000	;DC video start offset gx148
+
+;#if def	GX_720
+;	dw	08324,00100,00010	;DC line delta gx149
+;	dw	08328,08252,00000	;DC buffer size gx149
+;	dw	08330,0827F,00317	;DC h timing gx150
+;	dw	08334,0827F,00317	;DC h blank gx150
+;	dw	08338,0828F,002EF	;DC h sync gx151
+;	dw	0833C,0828F,002EF	;DC fp h sync gx151
+;	dw	08340,0818F,0020C	;DC v timing gx151
+;	dw	08344,081B7,001E4	;DC v blank gx151
+;	dw	08348,081C1,001C3	;DC v sync gx152
+;	dw	0834C,081C1,001C3	;DC fp v sync gx152
+;#endif
+;#if def	GX_640	;not tested !
+;	dw	08324,00100,00010	;DC line delta m166
+;	dw	08328,08252,00000	;DC buffer size m166
+;	dw	08330,(80-1)*8,(100-1)*8	;DC h timing m168 active, total
+;	dw	08334,80*8,98*8	;DC h blank m168 start, end
+;	dw	08338,81*8,94*8	;DC h sync m169 start, end
+;	dw	0833C,656-1,760-1	;DC fp h sync m169 start, end
+;	dw	08340,480-1,525-1	;DC v timing m169 active, total
+;	dw	08344,488-1,517-1	;DC v blank m170 start, end
+;	dw	08348,490-1,492-1	;DC v sync m170 start, end
+;	dw	0834C,490-1,492-1	;DC fp v sync m170 start, end
+;#endif
+;;	dw	08350,00000,00000	;DC cursor x gx153
+;;	dw	08358,00000,00000	;DC cursor y gx153
+;;	dw	0835C,003FF,00000	;DC split screen gx153
+
+;;	dw	08354,000CD,00002	;DC v line count gx153 RO
+;;	dw	08378,088A0,01A83	;DC disp FIFO test gx155
+;;	dw	0837C,00000,00000	;DC comp FIFO test gx155
+
+;	dw	08500,00000,00000	;PM SMI status gx182
+;	dw	08504,00000,00000	;PM serial packet control gx183
+;	dw	08508,00000,00000	;PM clock stop control gx183
+;	dw	0850C,00000,00000	;PM serial packet register gx183 RO
+
+gxtab3e:			;end of table
+
+#if def	GUGUUS
+	;
+	; GX registers, accessed through CPU_WRITE instruction
+	;
+gxtab4:	dw	0FF0C,0,0	;BLT buffer 0 base m101
+	dw	0FF1C,0,0	;BLT buffer 1 base m101
+	dw	0FF2C,0,0	;BLT buffer 0 pointer m101
+	dw	0FF3C,0,0	;BLT buffer 1 pointer m101
+	dw	0FF6C,0,0	;Power management base m212
+	dw	0FF7C,0,0	;Power management address mask m212
+gxtab4e:			;end of table
+#endif
+	;
+	; PCI config registers
+	;	
+	
+	; GX1 registers (north bridge)
+	
+gxtab6:
+;	dw	00000,01078	;0000 Vendor ID gx170 RO
+;	dw	00001	;0002 Device ID gx170 RO
+	dw	00004,00107	;0004 PCI command gx170
+			;enable SERR
+	dw	00280	;0006 PCI status gx170
+;	dw	00008,00000	;0008 Revision gx171 RO
+;	dw	00600	;0009 Class code gx171 RO
+	dw	0000C,00000	;000D PCI latency timer gx171
+	dw	00000	
+
+	dw	00040,01c0e	;0040 PCI control function 1 gx171
+			;support multiple PCI write, read,
+			;enable slave write buffer,
+			;PCI cache line read enable,
+			;Xbus burst enable
+			;0041 PCI control function 2 gx172
+			;enable Xbus to PCI write buffer
+			;1024 byte disconnect boundary
+	dw	04100	;0043 PCI arbitration control 1 gx172
+			;grant bus any time;
+			;no retry mask; hold X-bus on retries
+	dw	00044,00000	;0044 PCI arbitration control 2 gx173
+			;fixed arbitration, REQ0, REQ1, REQ2
+	dw	00000
+	
+	; SC1100 registers (south bridge)
+
+	dw	09004,0000F	;9004 PCI command sc166
+	dw	00280	;9006 PCI status sc167
+	dw	0904C,0000F	;904C Top of system memory sc171
+	dw	02000	;512 MB
+	dw	09050,0447b	;9050 PIT control / ISA divider sc171
+			;PIT reset disable, enable refresh
+			;toggle, GATE1 high, enable IRQ0,
+			;GATE0 low, ISA clock = PCI / 4
+			;9051 ISA I/O recovery sc172
+			;5 cycles
+	dw	0021D	;9052 ROM/AT logic control sc172
+			;disable KBC snoop, enable A20M on
+			;warm reset, enable port 92,
+			;upper ROM use mask register,
+			;disable ROM writes, lower ROM 128K
+			;9053 Alternate CPU sc173
+			;disable ROMCS for KBD, disable
+			;SMI on A20M toggle
+	dw	0905C,00000	;905C PCI interrupt map 1 sc174
+			;905D PCI interrupt map 2 sc174
+			;gets programmed later
+	dw	00000
+	dw	09060,00007	;9060 ACPI control sc175
+	dw	00000
+	dw	0906C,00000
+	dw	0FF00	;906E ROM mask sc176 -> 16MB
+	dw	09070,00000	;9070 IOCS1 base sc176
+	dw	00000	;9072 IOCS1 control sc176 -> disable
+	dw	09074,00000	;9074 IOCS0 base sc176
+	dw	00000	;9076 IOCS0 control sc176 -> disable
+	dw	09078,00000	;9078 DOCCS base sc177
+	dw	00000
+	dw	0907C,00000	;907C DOCCS control sc177 -> disable
+	dw	00000
+	dw	09080,00001	;9080 PM enable 1 sc177
+			;global enable
+			;9081 PM enable 2 sc178
+			;disable idle timers
+	dw	00000	;9082 PM enable 3 sc179
+			;disable traps
+			;9083 PM enable 4 sc180
+			;disable traps, timers, SMI
+;	dw	09084,00000	;9084 PM status 1 shadow sc181
+;			;9085 PM status 2 shadow sc182
+;	dw	00000	;9086 PM status 3 shadow sc182
+			;9087 PM status 4 shadow sc183
+	dw	09088,00000	;9088 GP timer 1 count sc184
+			;9089 GP timer 1 control sc184
+			;timebase 1 s
+	dw	00000	;908A GP timer 2 count sc185
+			;908B GP timer 2 control sc185
+			;timebase 1 s
+	dw	0908C,00000	;908C IRQ speedup timer count sc186
+	dw	00000
+	dw	09090,00000
+	dw	0c000	;9093 Misc device control sc186
+	dw	09094,00000	;9094 Suspend modulation OFF count sc186
+			;9095 Suspend modulation ON count sc187
+	dw	00000	;9096 Suspend configuration sc187
+	dw	09098,00000	;9098 HDD idle timer count sc187
+	dw	00000	;909A FDD idle timer count sc187
+	dw	0909C,00000	;909C LPT/COM idle timer count sc188
+	dw	00000	;909E KBD/mouse idle timer count sc188
+	dw	090A0,00000	;90A0 User 1 idle timer count sc188
+	dw	00000	;90A2 User 2 idle timer count sc188
+	dw	090A4,00000	;90A4 User 3 idle timer count sc188
+	dw	00000	;90A6 reserved sc188
+;	dw	090AC,00000	;90AC Sec HDD idle timer count sc188
+;	dw	00000	;90AE CPU suspend command sc189
+			;write will cause suspend !
+			;90AF Suspend notebook command sc189
+			;write will cause suspend !
+;	dw	090B4,00004	;90B4 3F2 shadow sc189
+;			;90B5 3F7 shadow sc189
+;	dw	03404	;90B6 372 shadow sc189
+;			;90B7 377 shadow sc189
+;	dw	090B8,01140	;90B8 8237 shadow sc189
+;			;90B9 8259 shadow sc190
+;	dw	0B600	;90BA 8254 shadow sc190
+;			;90BB RTC index shadow sc190
+	dw	090BC,00000	;90BC Clock stop control sc190
+	dw	00000
+	dw	090C0,00000	;90C0 User base 1 sc191
+	dw	00000
+	dw	090C4,00000	;90C4 User base 2 sc191
+	dw	00000
+	dw	090C8,00000	;90C8 User base 3 sc191
+	dw	00000
+	dw	090CC,00000	;90CC User control 1 sc191
+			;90CD User control 2 sc191
+	dw	00000	;90CE User control 3 sc192
+;	dw	090D0,00000	;90D0 Software SMI sc192
+;			;write will cause SMI !
+;	dw	00000
+;	dw	090EC,00000	;90EC Timer test sc192
+;	dw	00000
+;	dw	090F4,00000	;90F4 PM status 1 sc192 RC
+;			;90F5 PM status 2 sc193 RC
+;	dw	00000	;90F6 PM status 3 sc194 RC
+;			;90F7 PM status 4 sc195 RC
+
+	; function 1: SMI / ACPI - base already set
+
+	dw	09104,00001	;9104 PCI command sc207
+	dw	00280	;9106 PCI status sc207
+	
+	; function 2: IDE
+	
+	dw	09204,00005	;9204 PCI command sc225
+	dw	00280	;9206 PCI status sc225 RO
+
+	; default timing, set to correct values by cs_ide !
+
+#if def	FAST_PCI ; 66 MHz fast PCI timing
+
+	dw	09240,0f8e4	;9240 channel 0 drv 0 PIO sc226
+	dw	0f8e4	;mode 0 default
+	dw	09244,0fff3	;9244 channel 0 drv 0 DMA sc227
+	dw	0800f	;DMA mode 0, mode format 1
+	dw	09248,0f8e4	;9248 channel 0 drv 1 PIO sc226
+	dw	0f8e4
+	dw	0924C,0fff3	;924C channel 0 drv 1 DMA sc227
+	dw	0800f
+	dw	09250,0f8e4	;9250 channel 1 drv 0 PIO sc226
+	dw	0f8e4
+	dw	09254,0fff3	;9254 channel 1 drv 0 DMA sc227
+	dw	0800f
+	dw	09258,0f8e4	;9258 channel 1 drv 1 PIO sc226
+	dw	0f8e4
+	dw	0925C,0fff3	;925C channel 1 drv 1 DMA sc227
+	dw	0800f
+
+#else	; 33 MHz fast PCI timing
+
+	dw	09240,0d132	;9240 channel 0 drv 0 PIO sc226
+	dw	09172	;mode 0 default
+	dw	09244,07771	;9244 channel 0 drv 0 DMA sc227
+	dw	08007	;DMA mode 0, mode format 1
+	dw	09248,0d132	;9248 channel 0 drv 1 PIO sc226
+	dw	09172
+	dw	0924C,07771	;924C channel 0 drv 1 DMA sc227
+	dw	08007
+	dw	09250,0d132	;9250 channel 1 drv 0 PIO sc226
+	dw	09172
+	dw	09254,07771	;9254 channel 1 drv 0 DMA sc227
+	dw	08007
+	dw	09258,0d132	;9258 channel 1 drv 1 PIO sc226
+	dw	09172
+	dw	0925C,07771	;925C channel 1 drv 1 DMA sc227
+	dw	08007
+#endif
+
+	; function 3: audio (base already set)
+	
+	dw	09304,00006	;9304 PCI command sc231
+	dw	00280	;9306 PCI status sc231 RO
+
+	; function 4: video processor (base already set) ???
+
+	dw	09410,00000	;9410 F4BAR0 video base sc275 (SC1200)
+	dw	04080
+	dw	09414,00000	;9414 F4BAR1 reserved sc275 (SC1200)
+	dw	04001
+	dw	09418,05000	;9418 F4BAR2 VIP sc275 (SC1200)
+	dw	04001
+	dw	09404,00002	;9404 PCI command sc275
+	dw	00280	;9406 PCI status sc275 RO
+
+	dw	0943C,00300+INTC	;943C Interrupt line register sc276
+	dw	00000	;943D Interrupt pin register INTC# sc276 RO
+
+	; USB / HCI controller (base address already set)
+
+	dw	09804,00007	;9804 PCI command sc251
+	dw	00280	;9806 PCI status sc251 RO
+
+ 	dw	0980C,04008	;980C Cache line size sc252
+ 			;980D latency timer sc252
+	dw	00000	;980E header type sc252 RO
+			;980F BIST sc252 RO
+
+	dw	0983C,00100+INTA	;983C Interrupt line sc253
+			;983D Interrupt pin INTA# sc253
+	dw	05000	;983E Min grant sc253
+			;983F Max latency sc253
+;	dw	09840,0,0000F	;9840 ASIC test mode enable sc253
+;	dw	09844,0,0	;9844 ASIC operational mode enable sc253
+
+gxtab6e:			;end of table
+	;
+	; 5540 memory mapped config registers
+	;
+gxtab9:	
+	; audio subsystem
+
+	dw	AUDBASE+000,00000,00000	;CODEC GPIO status sc232
+	dw	AUDBASE+004,00000,00000	;CODEC GPIO control sc232
+	dw	AUDBASE+008,00000,00000	;CODEC status sc232
+;	dw	AUDBASE+00C,00000,00000	;CODEC command sc233
+;	dw	AUDBASE+010,01FFF,01FFF	;L2 audio SMI status sc233
+;	dw	AUDBASE+014,0FFFF,000FF	;IO trap SMI, fast status sc235
+	dw	AUDBASE+018,00000,00000	;IO trap SMI enable sc236
+			;1A internal IRQ -> none
+	dw	AUDBASE+01C,00000,00000	;Internal IRQ control sc238
+	dw	AUDBASE+020,00000,00000	;audio master 0 sc239
+	dw	AUDBASE+024,00000,00000	;audio master 0 PRD sc240
+	dw	AUDBASE+028,00000,00000	;audio master 1 sc240
+	dw	AUDBASE+02C,00000,00000	;audio master 1 PRD sc241
+	dw	AUDBASE+030,00000,00000	;audio master 2 sc241
+	dw	AUDBASE+034,00000,00000	;audio master 2 PRD sc242
+	dw	AUDBASE+038,00000,00000	;audio master 3 sc242
+	dw	AUDBASE+03C,00000,00000	;audio master 3 PRD sc243
+	dw	AUDBASE+040,00000,00000	;audio master 4 sc243
+	dw	AUDBASE+044,00000,00000	;audio master 4 PRD sc244
+	dw	AUDBASE+048,00000,00000	;audio master 4 sc244
+	dw	AUDBASE+04C,00000,00000	;audio master 4 PRD sc245
+gxtab9e:			;end of table
+	;
+	; 32 bit I/O mapped registers
+	;
+gxtab10:	dw	LPCBASE+000,V_LPC00,00000	;SERIRQ_SRC serial IRQ source sc200			
+	dw	LPCBASE+004,00000,00000	;SERIRQ_LVL serial IRQ level sc201
+			;active high
+	; this is set with before to preserve LPC flash enable bit !
+;	dw	LPCBASE+010	;LAD_EN LPC address enable sc204
+;	dd	V_LPC10	;LPC RTC, KBC, wide generic, FDC,
+			;COM, LPT
+	dw	LPCBASE+008,00080,00000	;SERIRQ_CNT serial IRQ control sc203
+			;enable serial IRQ
+	dw	LPCBASE+00C,00014,00000	;DRQ_SRC DRQ source sc203
+			;disable master cycles, enable DRQ2
+	dw	LPCBASE+014,V_LPC14,0	;LAD_D0 LPC address decode 0 sc204
+	dw	LPCBASE+018,00000,00000	;LAD_D1 LPC address decode 1 sc204
+			;none
+	dw	LPCBASE+01C,0007F,00000	;LPC_ERR_SMI LPC error SMI sc205
+			;LPC SMI disable, write 1 to clear stat
+;	dw	LPCBASE+020,00000,00000	;LPC_ERR_ADD LPC error addr RO sc205
+
+;	dw	XBUSBASE+000,00007,00000	;I/O control 1 sc250
+				;this is set earlier
+	dw	XBUSBASE+004,00000,00000	;I/O control 2 sc250
+			;IDSEL: AD28 for chipset, AD29 for USB
+			;should write as read
+	dw	XBUSBASE+008,09000,00000	;I/O control 3 sc250
+			;USB voltage adjustment = default,
+			;USB current adjustment = default,
+			;disable debug test port
+
+#if def	WRAP2A
+	dw	GPIOBASE+000,00541,00000	;GPDO0 GPIO out 0 sc196
+			;G2, G3, G18 low = LEDs
+			;G1, G17 low = HDCE#
+			;G0 high = NANDCE#
+#else
+	dw	GPIOBASE+000,00540,00000	;GPDO0 GPIO out 0 sc196
+;	dw	GPIOBASE+000,0FFF3,0FFFB	;GPDO0 GPIO out 0 sc196
+			;G2, G3, G18 low
+#endif
+;	dw	GPIOBASE+004,00000,00002	;GPDI0 GPIO in 0 sc196 RO
+	dw	GPIOBASE+008,00000,00000	;GPIEN0 GPIO int ena 0 sc196
+	dw	GPIOBASE+00C,0FFFF,00000	;GPST0 GPIO status 0 sc196
+			;write 1 to clear
+	dw	GPIOBASE+010,0FFFF,0FFFF	;GPDO1 GPIO out 1 sc197
+;	dw	GPIOBASE+014,00000,00000	;GPDI1 GPIO in 1 sc197 RO
+	dw	GPIOBASE+018,00000,00000	;GPIEN1 GPIO int ena 1 sc197
+	dw	GPIOBASE+01C,0FFFF,00000	;GPST1 GPIO status 1 sc197
+			;write 1 to clear
+	dw	GPIOBASE+020,00000,00000	;GPIO cfg select sc197
+	dw	GPIOBASE+024,00044,00000	;GPIO pin config sc198
+	dw	GPIOBASE+028,00000,00000	;GPIO reset control sc199
+gxtab10e:			;end of table	
+	;
+	; GPIO pin configuration (must be 64 bytes)
+	; see GPIO pin config access sc198 for details
+	;
+gxtab11:	
+#if def	WRAP
+#if def	WRAP2A
+	db	003,044,001,001,044,044,044,044	;G00
+			;G0 output -> NANDCE#
+			;G2 output -> LED1#
+			;G3 output -> LED2#
+	db	044,044,044,044,044,044,044,044	;G08
+			;G14 input -> DOGFOOD (WRAP.2C)
+	db	004,003,001,004,004,004,004,004 ;G16
+			;G17 output -> HDCE#
+			;G18 output -> LED3#
+			;G20 input -> NANDBSY#
+	db	004,004,004,004,004,004,004,004	;G24
+	db	044,044,044,044,044,044,044,044	;G32
+	db	044,044,044,044,044,044,044,047	;G40
+			;G40 input -> MODESW#
+			;G41 input -> read THRM# status
+			;G47 output -> PWRBTN#
+	db	004,004,004,004,004,004,004,004	;G48
+	db	004,004,004,004,004,004,004,004	;G56
+#else
+	db	044,044,001,001,044,044,044,044	;G00
+			;G2 output -> LED1#
+			;G3 output -> LED2#
+	db	044,044,044,044,044,044,044,044	;G08
+	db	004,004,001,004,004,004,004,004 ;G16
+			;G18 output -> LED3#
+	db	004,004,004,004,004,004,004,004	;G24
+	db	044,044,044,044,044,044,044,044	;G32
+	db	044,044,044,044,044,044,044,047	;G40
+			;G40 input -> MODESW#
+			;G41 input -> read THRM# status
+			;G47 output -> PWRBTN#
+	db	004,004,004,004,004,004,004,004	;G48
+	db	004,004,004,004,004,004,004,004	;G56
+#endif
+#else
+	db	044,044,044,044,044,044,044,044	;G00
+	db	044,044,044,044,044,044,044,044	;G08
+	db	004,004,004,004,004,004,004,004 ;G16
+	db	004,004,004,004,004,004,004,004	;G24
+	db	044,044,044,044,044,044,044,044	;G32
+	db	044,044,044,044,044,044,044,044	;G40
+	db	004,004,004,004,004,004,004,004	;G48
+	db	004,004,004,004,004,004,004,004	;G56
+#endif
+	; SMI status registers (most read only)
+
+;	dw	SMIBASE+000,00000	;L1 PME/SMI status mirror sc208 RO
+;	dw	SMIBASE+002,00000	;L1 PME/SMI status sc209 RC
+;	dw	SMIBASE+004,00000	;L2 general traps mirror sc210 RO
+;	dw	SMIBASE+006,00000	;L2 general traps sc211 RC
+;	dw	SMIBASE+01C,09B65	;ACPI timer sc212 RO
+;	dw	SMIBASE+01E,0008A	;
+;	dw	SMIBASE+020,00000	;L2 ACPI status mirror sc212 RO
+;	dw	SMIBASE+022,00000	;L2 ACPI status sc213 RC
+;	dw	SMIBASE+024,00000	;External SMI sc213
+
+	; ACPI config registers (0 = byte, 1 = word, 2 = longword)
+
+gxtab12:	db	1
+	dw	ACPIBASE+000,00000	;P_CNT processor control sc216
+	db	0
+	dw	ACPIBASE+007,000	;ACPI_FUN_CNT function control sc216
+	db	1
+	dw	ACPIBASE+008,08D31	;PM1A_STS L1 PME status sc217
+			;(write 1 to clear status)
+	db	1
+	dw	ACPIBASE+00A,00000	;PM1A_EN PME/SCI enable sc218
+	db	1
+	dw	ACPIBASE+00C,00001	;PM1A_CNT control sc218
+	db	0	;no SMI...
+	dw	ACPIBASE+00E,001	;ACPI_BIOS_STS sc219
+			;(write 1 to clear)
+	db	0
+	dw	ACPIBASE+00F,000	;ACPI_BIOS_EN sc219
+	db	1
+	dw	ACPIBASE+010,00779	;GPE0_STS event 0 status sc219
+			;(write 1 to clear)
+	db	1
+	dw	ACPIBASE+012,00000	;GPE0_EN event 0 enable sc221
+	db	1
+	dw	ACPIBASE+014,00000	;GPWIO control 1,2 sc222
+	db	0
+	dw	ACPIBASE+016,005	;GPWIO data sc223
+	db	2
+	dw	ACPIBASE+018,00000,00000	;ACPI SCI_ROUTING sc223	
+			;disable
+;	dw	ACPIBASE+01C,0C4E6,0008A	;ACPI timer sc224 RO
+
+	db	0
+	dw	ACPIBASE+020,000	;PM2_CNT PM2 control sc224
+
+	db	0
+	dw	IDEBASE+000,000	;IDE bus master 0 command sc229
+	db	0
+	dw	IDEBASE+002,004	;IDE bus master 0 status sc229
+	db	2
+	dw	IDEBASE+004,00000,00000	;IDE bus master 0 PRD addr sc229
+	db	0
+	dw	IDEBASE+008,000	;IDE bus master 1 command sc230
+	db	0
+	dw	IDEBASE+00A,004	;IDE bus master 1 status sc230
+	db	2
+	dw	IDEBASE+00C,00000,00000	;IDE bus master 1 PRD addr sc230
+gxtab12e:			;end of table
+	;
+	; IDE speed detect
+	;
+	; DL = drive number (80, 81, 82, 83)
+	; DS:DI = points to identify buffer
+	;
+cs_ide:	push	dx	;save DX
+	and	dx,3	;mask drive number
+	shl	dx,3	;* 8
+	
+	; determine highest PIO mode supported
+	
+	mov	cl,[di+51*2+1]	;PIO transfer mode 0..2
+	test	byte [di+53*2],2	;extra fields valid ?
+	jz	cs_ide5	;:no
+	test	byte [di+64*2],1	;mode 3 supported ?
+	jz	cs_ide1
+	mov	cl,3	;yes
+cs_ide1:	test	byte [di+64*2],2	;mode 4 supported ?
+	jz	cs_ide2
+	mov	cl,4	;yes
+cs_ide2:
+	; compare this against the reported PIO timing
+	
+	mov	ax,[di+68*2]	;min. PIO timing with I/O ready
+	and	ax,ax
+	jz	cs_ide5
+	mov	ch,4
+	mov	si,offset cs_idtab1
+cs_ide3:	cmp	ax,[cs:si]	;compare timing
+	jbe	cs_ide4	;:done
+	inc	si
+	inc	si
+	dec	ch
+	jnz	cs_ide3
+cs_ide4:	cmp	cl,ch	;take the lesser mode
+          jb	cs_ide5
+	mov	cl,ch
+cs_ide5:
+	; set PIO timing from table
+
+	mov	ch,0
+	shl	cx,2
+	mov	si,cx
+	mov 	eax,[cs:si+cs_idtab2]
+	mov	ebx,080009240	;PIO register sc226
+	add	bx,dx	;add drive index
+	call	pci_setd
+
+	; determine ultra DMA timing
+
+	test	byte [di+53*2],4	;ultra DMA valid ?
+	jz	cs_ide6	;:no, bail
+	mov	bl,[di+88*2]	;ultra DMA modes supported
+#if def	FAST_PCI
+	mov 	eax,80923261h	;mode 2
+	test	bl,4
+	jnz	cs_ide7	;:yes
+	mov 	eax,80933481h	;mode 1
+	test	bl,2
+	jnz	cs_ide7	;:yes
+	mov 	eax,809436a1h	;mode 0
+#else
+	mov 	eax,80911030h	;mode 2
+	test	bl,4
+	jnz	cs_ide7	;:yes
+	mov 	eax,80911140h	;mode 1
+	test	bl,2
+	jnz	cs_ide7	;:yes
+	mov 	eax,80921250h	;mode 0
+#endif
+	test	bl,1
+	jnz	cs_ide7	;:yes
+
+	; determine conventional DMA timing
+
+cs_ide6:	mov	ax,[di+66*2]	;recommended DMA cycle time
+	and	ax,ax
+	jz	cs_ide9	;0 -> default to mode 0
+	cmp	si,120	;120 ns or less - mode 2
+	ja	cs_ide9	;:too slow
+#if def	FAST_PCI
+	mov 	eax,80015151h	;mode 2 timing
+#else
+	mov 	eax,80002020h	;mode 2 timing
+#endif
+
+	; set DMA timing
+
+cs_ide7:	mov	bx,09244	;DMA register sc226
+	add	bx,dx	;add drive index
+	call	pci_setd
+	
+cs_ide9:	pop	dx	;restore drive number
+	ret
+	;
+	; PIO cycle times by mode
+	;
+cs_idtab1: dw	120	;mode 4
+	dw	180	;mode 3
+	dw	240	;mode 2
+	dw	383	;mode 1
+	dw	600	;mode 0
+          ;
+          ; PIO timing by mode (high -> IDETIM, low -> SIDETIM)
+          ;
+#if def	FAST_PCI
+cs_idtab2: dw	0f8e4,0f8e4	;mode 0 - 66 MHz timing
+	dw	0f353,053f3	;mode 1
+	dw	08141,013f1	;mode 2
+	dw	04231,04231	;mode 3
+	dw	01131,01131	;mode 4
+#else
+cs_idtab2: dw	0d132,09172	;mode 0 - 33 MHz timing
+	dw	07121,02171	;mode 1
+	dw	03020,00080	;mode 2
+	dw	02010,02010	;mode 3
+	dw	00010,00010	;mode 4
+#endif
